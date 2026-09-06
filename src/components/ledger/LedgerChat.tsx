@@ -54,6 +54,8 @@ export default function LedgerChat() {
   const [inputPrompt, setInputPrompt] = useState('');
   const [isListening, setIsListening] = useState(false);
   const [voiceEnabled, setVoiceEnabled] = useState(false);
+  const [isPlayingVoice, setIsPlayingVoice] = useState(false);
+  const [playingMessageId, setPlayingMessageId] = useState<string | null>(null);
   const [showScrollButton, setShowScrollButton] = useState(false);
   const [isSessionMenuOpen, setIsSessionMenuOpen] = useState(false);
   const [isBankModalOpen, setIsBankModalOpen] = useState(false);
@@ -66,6 +68,101 @@ export default function LedgerChat() {
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const currentAudioRef = useRef<HTMLAudioElement | null>(null);
+  const lastSpokenMessageIdRef = useRef<string | null>(null);
+
+  const stopJarvisVoice = useCallback(() => {
+    if (currentAudioRef.current) {
+      currentAudioRef.current.pause();
+      currentAudioRef.current.currentTime = 0;
+      currentAudioRef.current = null;
+    }
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      try {
+        window.speechSynthesis.cancel();
+      } catch (e) {
+        console.warn('Speech cancellation error:', e);
+      }
+    }
+    setIsPlayingVoice(false);
+    setPlayingMessageId(null);
+  }, []);
+
+  // J.A.R.V.I.S. British Neural Voice Synthesizer (Edge Neural TTS + Fallback)
+  const playJarvisVoice = useCallback(async (text: string, msgId?: string) => {
+    stopJarvisVoice();
+    if (!text || typeof window === 'undefined') return;
+
+    if (msgId) setPlayingMessageId(msgId);
+    setIsPlayingVoice(true);
+
+    const cleanText = text
+      .replace(/https?:\/\/\S+/g, '')
+      .replace(/[*#_~`•👉✅🤝🏠☕🚕⚠️💬⚖️🚨🎩💳⚡🛡️🎯💰💼⏳🥊🚀✨👗🧐]/gu, '')
+      .replace(/₹\s*(\d+(?:,\d+)*(?:\.\d+)?)/g, '$1 rupees')
+      .replace(/₹/g, ' rupees ')
+      .replace(/\n+/g, '. ')
+      .trim()
+      .slice(0, 500);
+
+    try {
+      const response = await fetch('/api/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: cleanText, voice: 'en-GB-RyanNeural' }),
+      });
+
+      if (!response.ok) throw new Error(`Edge TTS API returned ${response.status}`);
+
+      const blob = await response.blob();
+      const audioUrl = URL.createObjectURL(blob);
+      const audio = new Audio(audioUrl);
+      currentAudioRef.current = audio;
+
+      audio.onended = () => {
+        URL.revokeObjectURL(audioUrl);
+        setIsPlayingVoice(false);
+        setPlayingMessageId(null);
+      };
+
+      audio.onerror = () => {
+        URL.revokeObjectURL(audioUrl);
+        setIsPlayingVoice(false);
+        setPlayingMessageId(null);
+      };
+
+      await audio.play();
+    } catch (err) {
+      console.warn('Edge TTS API unavailable, using on-device synthesis fallback:', err);
+      if ('speechSynthesis' in window) {
+        try {
+          const utterance = new SpeechSynthesisUtterance(cleanText.slice(0, 250));
+          const voices = window.speechSynthesis.getVoices();
+          const preferred = voices.find(
+            (v) => v.lang.includes('en-GB') || v.name.includes('Daniel') || v.name.includes('Ryan') || v.name.includes('Google UK English Male')
+          ) || voices[0];
+          if (preferred) utterance.voice = preferred;
+          utterance.rate = 1.05;
+          utterance.pitch = 0.98;
+          utterance.onend = () => {
+            setIsPlayingVoice(false);
+            setPlayingMessageId(null);
+          };
+          utterance.onerror = () => {
+            setIsPlayingVoice(false);
+            setPlayingMessageId(null);
+          };
+          window.speechSynthesis.speak(utterance);
+        } catch {
+          setIsPlayingVoice(false);
+          setPlayingMessageId(null);
+        }
+      } else {
+        setIsPlayingVoice(false);
+        setPlayingMessageId(null);
+      }
+    }
+  }, [stopJarvisVoice]);
 
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -93,31 +190,18 @@ export default function LedgerChat() {
     setShowScrollButton(distFromBottom > 150);
   };
 
-  // J.A.R.V.I.S. Text-to-Speech audio feedback
+  // Automatically speak new assistant replies if voiceEnabled is ON
   useEffect(() => {
-    if (!voiceEnabled || typeof window === 'undefined' || !('speechSynthesis' in window)) return;
-    const lastMsg = chatMessages[chatMessages.length - 1];
-    if (lastMsg && lastMsg.sender === 'ai' && lastMsg.text) {
-      try {
-        window.speechSynthesis.cancel();
-        const cleanText = lastMsg.text
-          .replace(/[#*_~`•👉✅🤝🏠☕🚕⚠️💬⚖️]/g, '')
-          .replace(/\n+/g, '. ')
-          .slice(0, 250);
-        const utterance = new SpeechSynthesisUtterance(cleanText);
-        const voices = window.speechSynthesis.getVoices();
-        const preferred = voices.find(
-          (v) => v.lang.includes('en-GB') || v.lang.includes('en-US') || v.name.includes('Google') || v.name.includes('Natural')
-        ) || voices[0];
-        if (preferred) utterance.voice = preferred;
-        utterance.rate = 1.05;
-        utterance.pitch = 0.98;
-        window.speechSynthesis.speak(utterance);
-      } catch (e) {
-        console.warn('Speech synthesis error:', e);
-      }
+    if (!voiceEnabled) {
+      stopJarvisVoice();
+      return;
     }
-  }, [chatMessages, voiceEnabled]);
+    const lastMsg = chatMessages[chatMessages.length - 1];
+    if (lastMsg && lastMsg.sender === 'ai' && lastMsg.text && lastSpokenMessageIdRef.current !== lastMsg.id) {
+      lastSpokenMessageIdRef.current = lastMsg.id;
+      playJarvisVoice(lastMsg.text, lastMsg.id);
+    }
+  }, [chatMessages, voiceEnabled, playJarvisVoice, stopJarvisVoice]);
 
   const handleSubmit = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
@@ -268,15 +352,31 @@ export default function LedgerChat() {
           {/* Audio Voice Toggle */}
           <button
             type="button"
-            onClick={() => setVoiceEnabled(!voiceEnabled)}
-            className={`flex items-center gap-1.5 px-3 py-2 rounded-2xl text-xs font-bold border transition-all cursor-pointer shadow-xs ${voiceEnabled
-                ? 'bg-cyan-50 text-cyan-900 border-cyan-300'
+            onClick={() => {
+              if (voiceEnabled) {
+                stopJarvisVoice();
+                setVoiceEnabled(false);
+              } else {
+                setVoiceEnabled(true);
+              }
+            }}
+            className={`flex items-center gap-1.5 px-3 py-2 rounded-2xl text-xs font-bold border transition-all cursor-pointer shadow-xs ${
+              voiceEnabled
+                ? isPlayingVoice
+                  ? 'bg-cyan-500 text-white border-cyan-400 shadow-md shadow-cyan-200 animate-pulse'
+                  : 'bg-cyan-50 text-cyan-900 border-cyan-300'
                 : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-50'
-              }`}
-            title="Toggle J.A.R.V.I.S. Voice Feedback"
+            }`}
+            title="Toggle J.A.R.V.I.S. British Neural Voice (Edge TTS)"
           >
-            {voiceEnabled ? <Volume2 className="w-4 h-4 text-cyan-600" /> : <VolumeX className="w-4 h-4 text-slate-400" />}
-            <span className="hidden xs:inline">{voiceEnabled ? 'Voice ON' : 'Voice OFF'}</span>
+            {voiceEnabled ? (
+              isPlayingVoice ? <Volume2 className="w-4 h-4 animate-bounce" /> : <Volume2 className="w-4 h-4 text-cyan-600" />
+            ) : (
+              <VolumeX className="w-4 h-4 text-slate-400" />
+            )}
+            <span className="hidden xs:inline">
+              {voiceEnabled ? (isPlayingVoice ? 'Speaking…' : 'Voice ON') : 'Voice OFF'}
+            </span>
           </button>
 
           {/* Pocket Money Pill */}
@@ -574,6 +674,34 @@ export default function LedgerChat() {
                     <div className="flex items-center gap-2">
                       <span className="text-xs font-bold text-[#0b1c30]">J.A.R.V.I.S.</span>
                       <span className="text-[10px] text-[#76777d]">{msg.timestamp}</span>
+
+                      {/* Listen to this message audio button */}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (playingMessageId === msg.id) {
+                            stopJarvisVoice();
+                          } else {
+                            playJarvisVoice(msg.text, msg.id);
+                          }
+                        }}
+                        className={`p-1 rounded-full transition-all cursor-pointer flex items-center gap-1 text-[10px] font-semibold ${
+                          playingMessageId === msg.id
+                            ? 'bg-cyan-100 text-cyan-800 animate-pulse px-2'
+                            : 'text-slate-400 hover:text-cyan-700 hover:bg-slate-100'
+                        }`}
+                        title={playingMessageId === msg.id ? 'Stop speech' : 'Listen with J.A.R.V.I.S. voice'}
+                      >
+                        {playingMessageId === msg.id ? (
+                          <>
+                            <VolumeX className="w-3 h-3 text-rose-500" />
+                            <span className="text-[9px] text-rose-600">Stop</span>
+                          </>
+                        ) : (
+                          <Volume2 className="w-3.5 h-3.5" />
+                        )}
+                      </button>
+
                       {isScold && (
                         <span className="px-2 py-0.5 rounded-full bg-rose-100 text-[#ba1a1a] text-[10px] font-bold">
                           Protocol Breach

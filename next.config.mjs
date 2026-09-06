@@ -9,6 +9,7 @@ const nextConfig = {
       },
     ],
   },
+  serverExternalPackages: ['msedge-tts', 'ws'],
 };
 
 export default nextConfig;
