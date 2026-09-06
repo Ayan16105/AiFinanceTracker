@@ -169,9 +169,10 @@ export default function LedgerChat() {
   }, []);
 
   // Filter messages for current active session
-  const currentSessionMessages = chatMessages.filter(
-    (m) => (m.sessionId || 'sess-default') === currentSessionId || (!m.sessionId && currentSessionId === 'sess-default')
-  );
+  const currentSessionMessages = chatMessages.filter((m) => {
+    if (m.sessionId) return m.sessionId === currentSessionId;
+    return currentSessionId === (sessions[0]?.id || 'sess-default');
+  });
 
   const currentSession = sessions.find((s) => s.id === currentSessionId) || sessions[0];
 

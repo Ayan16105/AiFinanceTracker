@@ -126,6 +126,9 @@ export type AutoActionType =
   | 'clear_transactions'
   | 'reset_today' 
   | 'adjust_budget' 
+  | 'flip_last_debt'
+  | 'edit_last_transaction'
+  | 'edit_last_debt'
   | 'none';
 
 export interface AutoAction {
@@ -144,6 +147,9 @@ export interface AutoAction {
   };
   settleCounterparty?: string;
   recoveryAmount?: number;
+  isPartial?: boolean;
+  transactionUpdate?: Partial<Transaction>;
+  debtUpdate?: Partial<Debt>;
   goalData?: {
     name: string;
     targetAmount: number;

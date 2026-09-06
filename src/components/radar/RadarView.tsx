@@ -17,7 +17,9 @@ import {
   Wallet,
   Sparkles,
   ArrowRight,
-  Trash2
+  Trash2,
+  Pencil,
+  ArrowLeftRight
 } from 'lucide-react';
 
 export default function RadarView() {
@@ -25,6 +27,8 @@ export default function RadarView() {
     goals, 
     debts, 
     settleDebt, 
+    editDebt,
+    flipDebtDirection,
     addGoal, 
     addDebt,
     depositToGoal,
@@ -57,6 +61,58 @@ export default function RadarView() {
   const [debtAmount, setDebtAmount] = useState('');
   const [debtType, setDebtType] = useState<'owed_by_user' | 'owed_to_user'>('owed_by_user');
   const [debtDueDate, setDebtDueDate] = useState('');
+
+  // Edit debt modal state
+  const [editingDebt, setEditingDebt] = useState<Debt | null>(null);
+  const [editDebtTitle, setEditDebtTitle] = useState('');
+  const [editDebtAmount, setEditDebtAmount] = useState('');
+  const [editDebtType, setEditDebtType] = useState<'owed_by_user' | 'owed_to_user'>('owed_by_user');
+  const [editDebtDueDate, setEditDebtDueDate] = useState('');
+  const [editDebtNotes, setEditDebtNotes] = useState('');
+
+  // Partial settle modal state
+  const [partialSettleDebt, setPartialSettleDebt] = useState<Debt | null>(null);
+  const [partialSettleAmount, setPartialSettleAmount] = useState('');
+
+  const openEditDebtModal = (debt: Debt) => {
+    setEditingDebt(debt);
+    setEditDebtTitle(debt.title);
+    setEditDebtAmount(String(debt.amount));
+    setEditDebtType(debt.debtType);
+    setEditDebtDueDate(debt.dueDate || '');
+    setEditDebtNotes(debt.notes || '');
+  };
+
+  const handleSaveDebtEdit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingDebt) return;
+    const num = parseFloat(editDebtAmount);
+    if (isNaN(num) || num <= 0) return;
+
+    editDebt(editingDebt.id, {
+      title: editDebtTitle.trim() || editingDebt.title,
+      amount: num,
+      debtType: editDebtType,
+      dueDate: editDebtDueDate.trim() || undefined,
+      notes: editDebtNotes.trim() || undefined,
+    });
+    setToastMessage(`Updated liability record for ${editDebtTitle}!`);
+    setTimeout(() => setToastMessage(null), 3000);
+    setEditingDebt(null);
+  };
+
+  const handlePartialSettleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!partialSettleDebt) return;
+    const num = parseFloat(partialSettleAmount);
+    if (isNaN(num) || num <= 0) return;
+
+    settleDebt(partialSettleDebt.id, true, num);
+    setToastMessage(`Processed partial payment of ₹${num.toLocaleString()} for ${partialSettleDebt.title}!`);
+    setTimeout(() => setToastMessage(null), 3000);
+    setPartialSettleDebt(null);
+    setPartialSettleAmount('');
+  };
 
   const triggerToast = (msg: string) => {
     setToastMessage(msg);
@@ -476,12 +532,31 @@ export default function RadarView() {
                       </div>
 
                       <div>
-                        <h3 className="font-sans text-sm sm:text-base font-bold text-[#0b1c30]">
-                          {d.title}
-                        </h3>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <h3 className="font-sans text-sm sm:text-base font-bold text-[#0b1c30]">
+                            {d.title}
+                          </h3>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              flipDebtDirection(d.id);
+                              triggerToast(`Flipped direction for "${d.title}"!`);
+                            }}
+                            className="flex items-center gap-1 text-[10px] font-semibold text-slate-500 hover:text-blue-600 bg-slate-100 hover:bg-blue-50 px-2 py-0.5 rounded-full transition-colors cursor-pointer"
+                            title="Flip between I Owe and Owed to Me"
+                          >
+                            <ArrowLeftRight className="w-2.5 h-2.5" />
+                            <span>Flip</span>
+                          </button>
+                        </div>
                         <span className="text-xs text-[#76777d]">
                           {isIOwe ? 'I need to pay' : 'To be returned to me'} • {d.dueDate}
                         </span>
+                        {d.notes && (
+                          <p className="text-[11px] text-slate-500 mt-1 italic bg-slate-50 px-2.5 py-1 rounded-lg">
+                            {d.notes}
+                          </p>
+                        )}
                       </div>
                     </div>
 
@@ -499,32 +574,57 @@ export default function RadarView() {
                     </div>
                   </div>
 
-                  <div className="flex items-center justify-between pt-2 border-t border-slate-100">
-                    <button
-                      type="button"
-                      onClick={() => setDebtToDelete(d)}
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-slate-400 hover:text-rose-600 hover:bg-rose-50 text-xs font-semibold transition-all cursor-pointer"
-                      title="Delete this record"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                      <span>Delete</span>
-                    </button>
+                  <div className="flex items-center justify-between pt-2 border-t border-slate-100 flex-wrap gap-2">
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => openEditDebtModal(d)}
+                        className="flex items-center gap-1 px-2.5 py-1 rounded-full text-slate-600 hover:text-blue-600 hover:bg-blue-50 text-xs font-semibold transition-all cursor-pointer"
+                        title="Edit this record"
+                      >
+                        <Pencil className="w-3 h-3" />
+                        <span>Edit</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setDebtToDelete(d)}
+                        className="flex items-center gap-1 px-2.5 py-1 rounded-full text-slate-400 hover:text-rose-600 hover:bg-rose-50 text-xs font-semibold transition-all cursor-pointer"
+                        title="Delete this record"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                        <span>Delete</span>
+                      </button>
+                    </div>
 
                     {!d.isSettled ? (
-                      <button
-                        onClick={() => {
-                          settleDebt(d.id, true);
-                          if (d.debtType === 'owed_to_user') {
-                            triggerToast(`Recovered ₹${d.amount.toLocaleString()} from ${d.title} & credited to balance!`);
-                          } else {
-                            triggerToast(`Paid & settled ₹${d.amount.toLocaleString()} for ${d.title}!`);
-                          }
-                        }}
-                        className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-emerald-50 hover:bg-emerald-100 text-[#006c49] text-xs font-bold transition-all cursor-pointer border border-emerald-200"
-                      >
-                        <Check className="w-3.5 h-3.5 text-[#006c49]" />
-                        <span>{d.debtType === 'owed_to_user' ? 'Mark Settled (Received Money)' : 'Mark Settled (Paid)'}</span>
-                      </button>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        {d.amount > 100 && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPartialSettleDebt(d);
+                              setPartialSettleAmount('');
+                            }}
+                            className="flex items-center gap-1 px-3 py-1 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition-all cursor-pointer"
+                          >
+                            <span>Pay Partial...</span>
+                          </button>
+                        )}
+                        <button
+                          onClick={() => {
+                            settleDebt(d.id, true);
+                            if (d.debtType === 'owed_to_user') {
+                              triggerToast(`Recovered ₹${d.amount.toLocaleString()} from ${d.title} & credited to balance!`);
+                            } else {
+                              triggerToast(`Paid & settled ₹${d.amount.toLocaleString()} for ${d.title}!`);
+                            }
+                          }}
+                          className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-50 hover:bg-emerald-100 text-[#006c49] text-xs font-bold transition-all cursor-pointer border border-emerald-200"
+                        >
+                          <Check className="w-3.5 h-3.5 text-[#006c49]" />
+                          <span>{d.debtType === 'owed_to_user' ? 'Settle Full' : 'Settle Full'}</span>
+                        </button>
+                      </div>
                     ) : (
                       <span className="text-[11px] text-slate-400 font-semibold italic">Record Settled</span>
                     )}
@@ -952,6 +1052,190 @@ export default function RadarView() {
                 Yes, Delete Record
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit & Correct Debt Modal */}
+      {editingDebt && (
+        <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in zoom-in-95 duration-150">
+          <div className="bg-white rounded-3xl p-6 max-w-md w-full shadow-2xl border border-slate-100 flex flex-col gap-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="w-9 h-9 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center">
+                  <Pencil className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-base text-[#0b1c30]">Edit & Correct Debt Record</h3>
+                  <span className="text-[10px] text-slate-400">Update amount, direction, or details</span>
+                </div>
+              </div>
+              <button
+                onClick={() => setEditingDebt(null)}
+                className="text-slate-400 hover:text-slate-600 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveDebtEdit} className="flex flex-col gap-3">
+              <div>
+                <label className="text-[11px] font-bold text-slate-500 block mb-1">Title / Counterparty</label>
+                <input
+                  type="text"
+                  value={editDebtTitle}
+                  onChange={(e) => setEditDebtTitle(e.target.value)}
+                  required
+                  className="w-full px-3.5 py-2.5 rounded-2xl bg-slate-50 border border-slate-200 text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#0b1c30]"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[11px] font-bold text-slate-500 block mb-1">Amount (₹)</label>
+                  <input
+                    type="number"
+                    value={editDebtAmount}
+                    onChange={(e) => setEditDebtAmount(e.target.value)}
+                    required
+                    min="1"
+                    className="w-full px-3.5 py-2.5 rounded-2xl bg-slate-50 border border-slate-200 text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#0b1c30]"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[11px] font-bold text-slate-500 block mb-1">Direction</label>
+                  <select
+                    value={editDebtType}
+                    onChange={(e) => setEditDebtType(e.target.value as 'owed_by_user' | 'owed_to_user')}
+                    className="w-full px-3 py-2.5 rounded-2xl bg-slate-50 border border-slate-200 text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#0b1c30]"
+                  >
+                    <option value="owed_by_user">I Owe (Payable)</option>
+                    <option value="owed_to_user">Owed to Me (Receivable)</option>
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="text-[11px] font-bold text-slate-500 block mb-1">Due Date / Timeline</label>
+                <input
+                  type="text"
+                  placeholder="e.g. On Pay Day / Flexible"
+                  value={editDebtDueDate}
+                  onChange={(e) => setEditDebtDueDate(e.target.value)}
+                  className="w-full px-3.5 py-2.5 rounded-2xl bg-slate-50 border border-slate-200 text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#0b1c30]"
+                />
+              </div>
+
+              <div>
+                <label className="text-[11px] font-bold text-slate-500 block mb-1">Notes / Description</label>
+                <input
+                  type="text"
+                  placeholder="Optional context or payment trail"
+                  value={editDebtNotes}
+                  onChange={(e) => setEditDebtNotes(e.target.value)}
+                  className="w-full px-3.5 py-2.5 rounded-2xl bg-slate-50 border border-slate-200 text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#0b1c30]"
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setEditingDebt(null)}
+                  className="px-4 py-2.5 rounded-2xl bg-slate-100 hover:bg-slate-200 text-xs font-semibold text-slate-700 cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2.5 rounded-2xl bg-[#0b1c30] hover:bg-slate-800 text-white text-xs font-semibold cursor-pointer flex items-center gap-1.5 shadow-sm"
+                >
+                  <CheckCircle2 className="w-4 h-4" />
+                  <span>Save Changes</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Partial Settle Modal */}
+      {partialSettleDebt && (
+        <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in zoom-in-95 duration-150">
+          <div className="bg-white rounded-3xl p-6 max-w-md w-full shadow-2xl border border-slate-100 flex flex-col gap-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="w-9 h-9 rounded-2xl bg-emerald-50 text-[#006c49] flex items-center justify-center">
+                  <HandCoins className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-base text-[#0b1c30]">Partial Debt Payment</h3>
+                  <span className="text-[10px] text-slate-400">
+                    {partialSettleDebt.debtType === 'owed_by_user' ? 'Pay off a portion of your liability' : 'Record partial recovery'}
+                  </span>
+                </div>
+              </div>
+              <button
+                onClick={() => setPartialSettleDebt(null)}
+                className="text-slate-400 hover:text-slate-600 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-4 rounded-2xl bg-slate-50 border border-slate-100 flex flex-col gap-2">
+              <div className="flex justify-between text-xs text-slate-600">
+                <span>Counterparty:</span>
+                <strong className="text-[#0b1c30]">{partialSettleDebt.title}</strong>
+              </div>
+              <div className="flex justify-between text-xs text-slate-600">
+                <span>Current Outstanding:</span>
+                <strong className="font-mono-num text-[#0b1c30]">₹{partialSettleDebt.amount.toLocaleString()}</strong>
+              </div>
+              {parseFloat(partialSettleAmount) > 0 && parseFloat(partialSettleAmount) < partialSettleDebt.amount && (
+                <div className="flex justify-between text-xs pt-1 border-t border-slate-200 text-emerald-700">
+                  <span>Remaining after payment:</span>
+                  <strong className="font-mono-num font-bold">
+                    ₹{(partialSettleDebt.amount - parseFloat(partialSettleAmount)).toLocaleString()}
+                  </strong>
+                </div>
+              )}
+            </div>
+
+            <form onSubmit={handlePartialSettleSubmit} className="flex flex-col gap-3">
+              <div>
+                <label className="text-[11px] font-bold text-slate-500 block mb-1">Payment Amount (₹)</label>
+                <input
+                  type="number"
+                  placeholder={`e.g. ${Math.min(5000, Math.round(partialSettleDebt.amount / 2))}`}
+                  value={partialSettleAmount}
+                  onChange={(e) => setPartialSettleAmount(e.target.value)}
+                  required
+                  min="1"
+                  max={partialSettleDebt.amount}
+                  autoFocus
+                  className="w-full px-3.5 py-2.5 rounded-2xl bg-slate-50 border border-slate-200 text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#0b1c30]"
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setPartialSettleDebt(null)}
+                  className="px-4 py-2.5 rounded-2xl bg-slate-100 hover:bg-slate-200 text-xs font-semibold text-slate-700 cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={!partialSettleAmount || parseFloat(partialSettleAmount) <= 0 || parseFloat(partialSettleAmount) > partialSettleDebt.amount}
+                  className="px-5 py-2.5 rounded-2xl bg-[#006c49] hover:bg-emerald-700 text-white text-xs font-semibold cursor-pointer disabled:opacity-50 flex items-center gap-1.5 shadow-sm"
+                >
+                  <CheckCircle2 className="w-4 h-4" />
+                  <span>Confirm Partial Payment</span>
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

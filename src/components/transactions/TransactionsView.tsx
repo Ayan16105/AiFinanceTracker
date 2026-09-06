@@ -20,13 +20,15 @@ import {
   Wallet,
   Lock,
   ShieldAlert,
-  KeyRound
+  KeyRound,
+  Pencil
 } from 'lucide-react';
 
 export default function TransactionsView() {
   const { 
     transactions, 
     deleteTransaction, 
+    editTransaction,
     logExpense,
     userSettings,
     spentToday,
@@ -37,6 +39,39 @@ export default function TransactionsView() {
   const [selectedType, setSelectedType] = useState<string>('all');
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [showAddModal, setShowAddModal] = useState(false);
+
+  // Edit Transaction State
+  const [editingTx, setEditingTx] = useState<Transaction | null>(null);
+  const [editMerchant, setEditMerchant] = useState('');
+  const [editAmount, setEditAmount] = useState('');
+  const [editCategory, setEditCategory] = useState('');
+  const [editType, setEditType] = useState<TransactionType>('expense');
+  const [editDiscretionary, setEditDiscretionary] = useState(true);
+
+  const openEditModal = (tx: Transaction) => {
+    setEditingTx(tx);
+    setEditMerchant(tx.merchant);
+    setEditAmount(String(tx.amount));
+    setEditCategory(tx.category);
+    setEditType(tx.transactionType);
+    setEditDiscretionary(tx.isDiscretionary);
+  };
+
+  const handleSaveEdit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingTx) return;
+    const num = parseFloat(editAmount);
+    if (isNaN(num) || num <= 0) return;
+
+    editTransaction(editingTx.id, {
+      merchant: editMerchant.trim() || editingTx.merchant,
+      amount: num,
+      category: editCategory.trim() || editingTx.category,
+      transactionType: editType,
+      isDiscretionary: editDiscretionary,
+    });
+    setEditingTx(null);
+  };
 
   // Security Authorization state for deleting transactions
   const [txToDelete, setTxToDelete] = useState<Transaction | null>(null);
@@ -287,46 +322,140 @@ export default function TransactionsView() {
             )}
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse">
-              <thead>
-                <tr className="border-b border-slate-100 text-[11px] font-bold text-slate-400 uppercase tracking-wider bg-slate-50/50">
-                  <th className="py-3.5 px-5">Date & Time</th>
-                  <th className="py-3.5 px-4">Merchant / Title</th>
-                  <th className="py-3.5 px-4">Category</th>
-                  <th className="py-3.5 px-4">Type</th>
-                  <th className="py-3.5 px-4 text-right">Amount</th>
-                  <th className="py-3.5 px-5 text-center">Action</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 text-xs">
-                {filteredTransactions.map((tx) => (
-                  <tr 
-                    key={tx.id}
-                    className="hover:bg-slate-50/70 transition-colors group"
-                  >
-                    <td className="py-3.5 px-5 whitespace-nowrap text-slate-500 font-mono-num text-[11px]">
-                      {tx.date} {tx.time && <span className="text-slate-400">· {tx.time}</span>}
-                    </td>
+          <>
+            {/* Desktop Table View (Screen >= md) */}
+            <div className="hidden md:block overflow-x-auto">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="border-b border-slate-100 text-[11px] font-bold text-slate-400 uppercase tracking-wider bg-slate-50/50">
+                    <th className="py-3.5 px-5">Date & Time</th>
+                    <th className="py-3.5 px-4">Merchant / Title</th>
+                    <th className="py-3.5 px-4">Category</th>
+                    <th className="py-3.5 px-4">Type</th>
+                    <th className="py-3.5 px-4 text-right">Amount</th>
+                    <th className="py-3.5 px-5 text-center">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 text-xs">
+                  {filteredTransactions.map((tx) => (
+                    <tr 
+                      key={tx.id}
+                      className="hover:bg-slate-50/70 transition-colors group"
+                    >
+                      <td className="py-3.5 px-5 whitespace-nowrap text-slate-500 font-mono-num text-[11px]">
+                        {tx.date} {tx.time && <span className="text-slate-400">· {tx.time}</span>}
+                      </td>
 
-                    <td className="py-3.5 px-4">
-                      <div className="flex flex-col">
-                        <span className="font-bold text-[#0b1c30]">{tx.merchant}</span>
-                        {tx.rawPrompt && tx.rawPrompt !== tx.merchant && (
-                          <span className="text-[10px] text-slate-400 truncate max-w-xs">
-                            "{tx.rawPrompt}"
-                          </span>
-                        )}
-                      </div>
-                    </td>
+                      <td className="py-3.5 px-4">
+                        <div className="flex flex-col">
+                          <span className="font-bold text-[#0b1c30]">{tx.merchant}</span>
+                          {tx.rawPrompt && tx.rawPrompt !== tx.merchant && (
+                            <span className="text-[10px] text-slate-400 truncate max-w-xs">
+                              "{tx.rawPrompt}"
+                            </span>
+                          )}
+                        </div>
+                      </td>
 
-                    <td className="py-3.5 px-4">
-                      <span className="px-2.5 py-1 rounded-full text-[11px] font-semibold bg-slate-100 text-slate-700">
+                      <td className="py-3.5 px-4">
+                        <span className="px-2.5 py-1 rounded-full text-[11px] font-semibold bg-slate-100 text-slate-700">
+                          {tx.category}
+                        </span>
+                      </td>
+
+                      <td className="py-3.5 px-4">
+                        <span 
+                          className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                            tx.isDiscretionary
+                              ? 'bg-amber-50 text-amber-800 border border-amber-200'
+                              : 'bg-indigo-50 text-indigo-800 border border-indigo-200'
+                          }`}
+                        >
+                          {tx.isDiscretionary ? 'Pocket Money' : 'Fixed Overhead'}
+                        </span>
+                      </td>
+
+                      <td className="py-3.5 px-4 text-right whitespace-nowrap">
+                        <span 
+                          className={`font-mono-num font-bold text-sm ${
+                            tx.transactionType === 'income' 
+                              ? 'text-emerald-600' 
+                              : 'text-rose-600'
+                          }`}
+                        >
+                          {tx.transactionType === 'income' ? '+₹' : '-₹'}
+                          {tx.amount.toLocaleString()}
+                        </span>
+                      </td>
+
+                      <td className="py-3.5 px-5 text-center">
+                        <div className="flex items-center justify-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => openEditModal(tx)}
+                            className="p-1.5 rounded-xl text-slate-400 hover:text-[#0b1c30] hover:bg-slate-100 transition-colors cursor-pointer"
+                            title="Edit Transaction"
+                          >
+                            <Pencil className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setTxToDelete(tx);
+                              setDeleteAuthInput('');
+                              setDeleteError('');
+                            }}
+                            className="p-1.5 rounded-xl text-slate-300 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
+                            title="Request Ledger Security Authorization to Delete"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Mobile Card List (Screen < md) */}
+            <div className="md:hidden p-3 space-y-3">
+              {filteredTransactions.map((tx) => (
+                <div 
+                  key={tx.id}
+                  className="bg-white rounded-2xl p-4 border border-slate-100 shadow-xs flex flex-col gap-2.5"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex flex-col">
+                      <span className="font-bold text-sm text-[#0b1c30]">{tx.merchant}</span>
+                      <span className="text-[11px] text-slate-400 font-mono-num mt-0.5">
+                        {tx.date} {tx.time && `· ${tx.time}`}
+                      </span>
+                    </div>
+
+                    <span 
+                      className={`font-mono-num font-bold text-base whitespace-nowrap ${
+                        tx.transactionType === 'income' 
+                          ? 'text-emerald-600' 
+                          : 'text-rose-600'
+                      }`}
+                    >
+                      {tx.transactionType === 'income' ? '+₹' : '-₹'}
+                      {tx.amount.toLocaleString()}
+                    </span>
+                  </div>
+
+                  {tx.rawPrompt && tx.rawPrompt !== tx.merchant && (
+                    <p className="text-[11px] text-slate-400 truncate italic bg-slate-50 px-2.5 py-1 rounded-xl">
+                      "{tx.rawPrompt}"
+                    </p>
+                  )}
+
+                  <div className="flex items-center justify-between pt-2 border-t border-slate-100">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="px-2.5 py-0.5 rounded-full text-[10px] font-semibold bg-slate-100 text-slate-700">
                         {tx.category}
                       </span>
-                    </td>
-
-                    <td className="py-3.5 px-4">
                       <span 
                         className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
                           tx.isDiscretionary
@@ -334,24 +463,19 @@ export default function TransactionsView() {
                             : 'bg-indigo-50 text-indigo-800 border border-indigo-200'
                         }`}
                       >
-                        {tx.isDiscretionary ? 'Pocket Money' : 'Fixed Overhead'}
+                        {tx.isDiscretionary ? 'Pocket' : 'Fixed'}
                       </span>
-                    </td>
+                    </div>
 
-                    <td className="py-3.5 px-4 text-right whitespace-nowrap">
-                      <span 
-                        className={`font-mono-num font-bold text-sm ${
-                          tx.transactionType === 'income' 
-                            ? 'text-emerald-600' 
-                            : 'text-rose-600'
-                        }`}
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => openEditModal(tx)}
+                        className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold cursor-pointer transition-colors"
                       >
-                        {tx.transactionType === 'income' ? '+₹' : '-₹'}
-                        {tx.amount.toLocaleString()}
-                      </span>
-                    </td>
-
-                    <td className="py-3.5 px-5 text-center">
+                        <Pencil className="w-3 h-3" />
+                        <span>Edit</span>
+                      </button>
                       <button
                         type="button"
                         onClick={() => {
@@ -359,17 +483,17 @@ export default function TransactionsView() {
                           setDeleteAuthInput('');
                           setDeleteError('');
                         }}
-                        className="p-1.5 rounded-xl text-slate-300 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
-                        title="Request Ledger Security Authorization to Delete"
+                        className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-600 text-xs font-semibold cursor-pointer transition-colors"
                       >
-                        <Trash2 className="w-3.5 h-3.5" />
+                        <Trash2 className="w-3 h-3" />
+                        <span>Delete</span>
                       </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>
         )}
       </div>
 
@@ -554,6 +678,119 @@ export default function TransactionsView() {
                       <span>Log Entry</span>
                     </>
                   )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Edit & Correct Transaction Modal */}
+      {editingTx && (
+        <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl p-6 max-w-md w-full shadow-2xl border border-slate-100 flex flex-col gap-4 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="w-9 h-9 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center">
+                  <Pencil className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-base text-[#0b1c30]">Edit & Correct Transaction</h3>
+                  <span className="text-[10px] text-slate-400">Live ledger synchronization</span>
+                </div>
+              </div>
+              <button
+                onClick={() => setEditingTx(null)}
+                className="text-slate-400 hover:text-slate-600 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveEdit} className="flex flex-col gap-3">
+              <div>
+                <label className="text-[11px] font-bold text-slate-500 block mb-1">Merchant / Title</label>
+                <input
+                  type="text"
+                  value={editMerchant}
+                  onChange={(e) => setEditMerchant(e.target.value)}
+                  required
+                  className="w-full px-3.5 py-2.5 rounded-2xl bg-slate-50 border border-slate-200 text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#0b1c30]"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[11px] font-bold text-slate-500 block mb-1">Amount (₹)</label>
+                  <input
+                    type="number"
+                    value={editAmount}
+                    onChange={(e) => setEditAmount(e.target.value)}
+                    required
+                    min="1"
+                    step="any"
+                    className="w-full px-3.5 py-2.5 rounded-2xl bg-slate-50 border border-slate-200 text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#0b1c30]"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[11px] font-bold text-slate-500 block mb-1">Type</label>
+                  <select
+                    value={editType}
+                    onChange={(e) => setEditType(e.target.value as TransactionType)}
+                    className="w-full px-3 py-2.5 rounded-2xl bg-slate-50 border border-slate-200 text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#0b1c30]"
+                  >
+                    <option value="expense">Expense (-)</option>
+                    <option value="income">Income (+)</option>
+                    <option value="transfer">Transfer</option>
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="text-[11px] font-bold text-slate-500 block mb-1">Category</label>
+                <select
+                  value={editCategory}
+                  onChange={(e) => setEditCategory(e.target.value)}
+                  className="w-full px-3 py-2.5 rounded-2xl bg-slate-50 border border-slate-200 text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#0b1c30]"
+                >
+                  {categories.filter(c => c !== 'all').map((cat) => (
+                    <option key={cat} value={cat}>{cat}</option>
+                  ))}
+                  <option value="Debt Repayment">Debt Repayment</option>
+                  <option value="Debt Recovery / Refund">Debt Recovery / Refund</option>
+                  <option value="Savings & Goals">Savings & Goals</option>
+                  <option value="General Discretionary">General Discretionary</option>
+                </select>
+              </div>
+
+              <div className="flex items-center gap-2 pt-1">
+                <input
+                  type="checkbox"
+                  id="editDiscretionary"
+                  checked={editDiscretionary}
+                  onChange={(e) => setEditDiscretionary(e.target.checked)}
+                  className="rounded border-slate-300 text-[#0b1c30] focus:ring-[#0b1c30]"
+                />
+                <label htmlFor="editDiscretionary" className="text-xs text-slate-700 select-none cursor-pointer">
+                  Count towards daily pocket allowance (Discretionary)
+                </label>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setEditingTx(null)}
+                  className="px-4 py-2.5 rounded-2xl bg-slate-100 hover:bg-slate-200 text-xs font-semibold text-slate-700 cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2.5 rounded-2xl bg-[#0b1c30] hover:bg-slate-800 text-white text-xs font-semibold cursor-pointer flex items-center gap-1.5 shadow-sm"
+                >
+                  <CheckCircle2 className="w-4 h-4" />
+                  <span>Save Corrections</span>
                 </button>
               </div>
             </form>

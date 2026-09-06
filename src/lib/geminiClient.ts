@@ -37,12 +37,23 @@ DEBTS, LOANS & OBLIGATIONS (CRITICAL):
      * Owed by you (Karza / Hume dena hai): ₹X
      * Owed to you (Lent / Hume lena hai): ₹Y
      * List each active loan.
-3. WHEN MONEY IS RETURNED / RECEIVED / RECOVERED (CRITICAL BUG FIX):
-   - e.g. "haa unke baki 6500 wapis aa gye h", "Sharma ji se 6500 wapis aa gaye", "paise wapas mil gaye":
-   - THIS IS INCOMING MONEY / REVENUE CREDIT! (POSITIVE INCOMING CASH!)
-   - Set amount: EXACT AMOUNT (e.g. 6500), transaction_type: "income", category: "Debt Recovery / Refund", merchant: "Counterparty (Debt Recovery)", is_discretionary: false, is_over_limit: false.
-   - Emit auto_action: { "type": "settle_debt", "settleCounterparty": string, "debtAmount": number }.
-   - Respond enthusiastically: "Nice, Boss! ₹6,500 wapis aa gaye hain. Maine ise ledger mein +₹6,500 incoming credit record kar diya hai aur pending debt status settle kar diya hai. Current liquid cash balance boost ho gaya hai!"
+4. PARTIAL DEBT REPAYMENT (CRITICAL USER MANDATE):
+   - e.g. "I partially paid 5000 of my 20000 debt to Rahul", "partially pay a debt of 20000 to 5000", "Rahul ko 20000 me se 5000 de diye", "paid 5000 to Rahul towards debt":
+   - THIS IS A PARTIAL SETTLEMENT! It does NOT clear the full debt.
+   - Set amount: payment amount (e.g. 5000), transaction_type: "expense", category: "Debt Repayment", merchant: "Counterparty (Debt Repayment)", is_discretionary: false, is_over_limit: false.
+   - Emit auto_action: { "type": "settle_debt", "settleCounterparty": string, "debtAmount": number, "isPartial": true }.
+   - In ca_commentary, explain clearly: "Understood, Sir! ₹[amount] payment recorded towards your debt. The remaining balance (₹[original - amount]) remains active on your radar!"
+5. CORRECTION OF WRONG ENTRIES / FLIP DEBT DIRECTION (CRITICAL USER MANDATE):
+   - When Sir corrects a mistake in debt direction (e.g. "wait fix that, someone owes me", "Rahul owes me not I owe him", "actually he owes me", "maine galat bol diya mujhe lena hai"):
+     --> THIS IS A CORRECTION COMMAND! Set amount: 0, transaction_type: "transfer", is_discretionary: false.
+     --> Emit auto_action: { "type": "flip_last_debt" }.
+     --> Respond: "Correction acknowledged, Sir! I have flipped the debt direction: it is now recorded as a Receivable (owed to you) rather than a liability you owe!"
+6. CORRECTION OF WRONG TRANSACTION (CRITICAL USER MANDATE):
+   - When Sir wants to fix an error in the last logged transaction (e.g. "wait fix that last transaction to 500", "change that last spend to 200", "galti se wrong log ho gaya, 500 karo"):
+     --> Extract new amount (e.g. 500).
+     --> Set amount: 0, transaction_type: "transfer", is_discretionary: false.
+     --> Emit auto_action: { "type": "edit_last_transaction", "transactionUpdate": { "amount": number } }.
+     --> Respond: "Correction applied, Sir! Adjusted the last transaction amount to ₹[newAmount]. Your daily spend figures have been recalculated."
 
 GOALS & SAVINGS INQUIRIES & ALLOCATIONS:
 1. INQUIRIES:
@@ -256,6 +267,108 @@ export function parseExpenseWithRules(
   const currentFixed = context?.fixedBills || 12000;
   const totalTxCount = context?.transactionsCount ?? 0;
   const isEnglish = isEnglishPrompt(prompt);
+
+  // 0.1 Conversational Record Correction: Flip Debt Direction
+  const isDebtFlipCorrection =
+    (cleanPrompt.includes('fix') || cleanPrompt.includes('change') || cleanPrompt.includes('galat') || cleanPrompt.includes('wrong') || cleanPrompt.includes('wait') || cleanPrompt.includes('arre')) &&
+    (cleanPrompt.includes('owes me') || cleanPrompt.includes('lena hai') || cleanPrompt.includes('lene hai') || cleanPrompt.includes('receivable') || cleanPrompt.includes('flip'));
+
+  if (isDebtFlipCorrection) {
+    return {
+      merchant: 'J.A.R.V.I.S. Record Correction',
+      amount: 0,
+      category: 'System Command',
+      transactionType: 'transfer',
+      isDiscretionary: false,
+      isOverLimit: false,
+      exceededBy: 0,
+      remainingSafeToSpend: Math.max(0, dailyLimit - spentToday),
+      sentiment: 'praise',
+      caCommentary: isEnglish
+        ? `Correction acknowledged, Sir! I have inverted the liability record: it is now securely catalogued as a Receivable (owed to you) rather than a payable debt!`
+        : `Correction acknowledged, Boss! Maine record theek kar diya hai: ab yeh Receivable hai (hume lena hai), aap par koi karza nahi hai!`,
+      tomorrowAdjustedCap: dailyLimit,
+      autoAction: {
+        type: 'flip_last_debt',
+      },
+    };
+  }
+
+  // 0.2 Conversational Record Correction: Fix Wrong Logged Transaction
+  const isTxCorrection =
+    (cleanPrompt.includes('fix') || cleanPrompt.includes('change') || cleanPrompt.includes('correct') || cleanPrompt.includes('galat') || cleanPrompt.includes('wrong')) &&
+    (cleanPrompt.includes('transaction') || cleanPrompt.includes('kharcha') || cleanPrompt.includes('amount') || cleanPrompt.includes('kardo') || cleanPrompt.includes('karo'));
+
+  if (isTxCorrection) {
+    const amountMatch = prompt.match(/(\d{2,6})/);
+    const newAmount = amountMatch ? parseInt(amountMatch[1], 10) : 500;
+    return {
+      merchant: 'J.A.R.V.I.S. Transaction Correction',
+      amount: 0,
+      category: 'System Command',
+      transactionType: 'transfer',
+      isDiscretionary: false,
+      isOverLimit: false,
+      exceededBy: 0,
+      remainingSafeToSpend: Math.max(0, dailyLimit - spentToday),
+      sentiment: 'praise',
+      caCommentary: isEnglish
+        ? `Correction applied, Sir! Adjusted the last transaction amount to ₹${newAmount.toLocaleString()}. Your daily spend figures have been recalculated.`
+        : `Correction kar di hai, Boss! Last transaction amount ko adjust karke ₹${newAmount.toLocaleString()} kar diya hai. Daily spend hisaab update ho gaya hai!`,
+      tomorrowAdjustedCap: dailyLimit,
+      autoAction: {
+        type: 'edit_last_transaction',
+        transactionUpdate: {
+          amount: newAmount,
+        },
+      },
+    };
+  }
+
+  // 0.3 Partial Debt Repayment (e.g. "partially pay a debt of 20000 to 5000", "i paid 5000 of 20000 debt to rahul", "roommate ko 20000 me se 5000 de diye")
+  const isPartialDebtPay =
+    (cleanPrompt.includes('debt') || cleanPrompt.includes('udhaar') || cleanPrompt.includes('karza') || cleanPrompt.includes('loan') || cleanPrompt.includes('dene the') || cleanPrompt.includes('de diye')) &&
+    (cleanPrompt.includes('partial') || cleanPrompt.includes('me se') || cleanPrompt.includes('mein se') || cleanPrompt.includes('paid') || cleanPrompt.includes('de diye') || cleanPrompt.includes('baki'));
+
+  if (isPartialDebtPay) {
+    const numbers = (prompt.match(/(\d{3,6})/g) || []).map((n) => parseInt(n, 10));
+    let payAmount = 5000;
+    let originalDebt = 20000;
+    if (numbers.length >= 2) {
+      originalDebt = Math.max(...numbers);
+      payAmount = Math.min(...numbers);
+    } else if (numbers.length === 1) {
+      payAmount = numbers[0];
+    }
+    const remaining = Math.max(0, originalDebt - payAmount);
+
+    let counterparty = 'Roommate';
+    if (cleanPrompt.includes('rahul')) counterparty = 'Rahul';
+    else if (cleanPrompt.includes('sharma')) counterparty = 'Sharma Ji';
+    else if (cleanPrompt.includes('friend') || cleanPrompt.includes('dost')) counterparty = 'Friend';
+
+    return {
+      merchant: `${counterparty} (Partial Debt Payment)`,
+      amount: payAmount,
+      category: 'Debt Repayment',
+      transactionType: 'expense',
+      isDiscretionary: false,
+      isOverLimit: false,
+      exceededBy: 0,
+      remainingSafeToSpend: Math.max(0, dailyLimit - spentToday),
+      sentiment: 'praise',
+      caCommentary: isEnglish
+        ? `Understood, Sir! ₹${payAmount.toLocaleString()} payment towards your debt to ${counterparty} has been logged in your ledger. The remaining balance of ₹${remaining.toLocaleString()} is still tracked on your radar!`
+        : `Samajh gaya, Boss! ${counterparty} ke debt mein se ₹${payAmount.toLocaleString()} payment ledger mein log kar di hai. Baki bacha ₹${remaining.toLocaleString()} balance abhi bhi radar par active hai!`,
+      tomorrowAdjustedCap: dailyLimit,
+      autoAction: {
+        type: 'settle_debt',
+        settleCounterparty: counterparty,
+        debtAmount: payAmount,
+        isPartial: true,
+      },
+    };
+  }
 
   // 1. Explicit App Navigation Commands ONLY (e.g. "JARVIS dashboard dikhao", "open dashboard", "transactions dikhao")
   const isExplicitNavCommand =

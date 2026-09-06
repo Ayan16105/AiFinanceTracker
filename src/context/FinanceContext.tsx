@@ -6,6 +6,7 @@ import {
   Transaction,
   SavingsGoal,
   Debt,
+  DebtType,
   ChatMessage,
   ChatSession,
   ParseExpenseResult,
@@ -64,7 +65,12 @@ interface FinanceContextType {
   logExpense: (prompt: string) => Promise<ParseExpenseResult>;
   depositToGoal: (goalId: string, amount: number) => void;
   withdrawFromGoal: (goalId: string, amount: number) => void;
-  settleDebt: (debtId: string, autoLogTransaction?: boolean) => void;
+  settleDebt: (debtId: string, autoLogTransaction?: boolean, partialAmount?: number) => void;
+  editTransaction: (transactionId: string, updates: Partial<Transaction>) => void;
+  editDebt: (debtId: string, updates: Partial<Debt>) => void;
+  flipDebtDirection: (debtId: string) => void;
+  flipLastDebt: () => void;
+  editLastTransaction: (updates: Partial<Transaction>) => void;
   addGoal: (goal: Omit<SavingsGoal, 'id' | 'userId'>) => void;
   deleteGoal: (goalId: string) => void;
   addDebt: (debt: Omit<Debt, 'id' | 'userId'>) => void;
@@ -82,7 +88,21 @@ interface FinanceContextType {
 
 const FinanceContext = createContext<FinanceContextType | undefined>(undefined);
 
-const DEFAULT_SESSION_ID = 'sess-default';
+export const getTodaySessionId = () => {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `sess-${y}-${m}-${d}`;
+};
+
+export const getTodaySessionTitle = () => {
+  const now = new Date();
+  const formatted = now.toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' });
+  return `Briefing — ${formatted}`;
+};
+
+const DEFAULT_SESSION_ID = getTodaySessionId();
 
 export function FinanceProvider({ children }: { children: React.ReactNode }) {
   const [activeTab, setActiveTab] = useState<'command-center' | 'ai-ca-ledger' | 'transactions-ledger' | 'radar-and-horizons'>('command-center');
@@ -92,35 +112,45 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
   const [debts, setDebts] = useState<Debt[]>(initialDebts);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>(initialChatMessages);
 
-  // Chat Sessions state
+  // Chat Sessions state (One persistent session per day)
   const [sessions, setSessions] = useState<ChatSession[]>(() => {
+    const todayId = getTodaySessionId();
+    const todayTitle = getTodaySessionTitle();
+    const nowIso = new Date().toISOString();
+    const todaySession: ChatSession = {
+      id: todayId,
+      title: todayTitle,
+      createdAt: nowIso,
+      lastActiveAt: nowIso,
+    };
+
     if (typeof window !== 'undefined') {
       try {
         const saved = localStorage.getItem('jarvis_chat_sessions');
         if (saved) {
           const parsed = JSON.parse(saved);
-          if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            const hasToday = parsed.some((s: ChatSession) => s.id === todayId);
+            if (!hasToday) {
+              return [todaySession, ...parsed];
+            }
+            return parsed;
+          }
         }
       } catch {}
     }
-    return [
-      {
-        id: DEFAULT_SESSION_ID,
-        title: 'Initial Briefing',
-        createdAt: new Date().toISOString(),
-        lastActiveAt: new Date().toISOString(),
-      },
-    ];
+    return [todaySession];
   });
 
   const [currentSessionId, setCurrentSessionId] = useState<string>(() => {
+    const todayId = getTodaySessionId();
     if (typeof window !== 'undefined') {
       try {
         const saved = localStorage.getItem('jarvis_active_session_id');
         if (saved) return saved;
       } catch {}
     }
-    return DEFAULT_SESSION_ID;
+    return todayId;
   });
 
   const [isAuditing, setIsAuditing] = useState(false);
@@ -329,29 +359,40 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
     });
   };
 
-  const settleDebt = (debtId: string, autoLogTransaction: boolean = true) => {
+  const settleDebt = (debtId: string, autoLogTransaction: boolean = true, partialAmount?: number) => {
     const debt = debts.find((d) => d.id === debtId);
     if (!debt) return;
 
-    const settledDebt: Debt = { ...debt, isSettled: true };
-    setDebts((prev) =>
-      prev.map((d) => (d.id === debtId ? settledDebt : d))
-    );
-    SupabaseService.syncDebtUpsert(settledDebt);
-
-    if (!autoLogTransaction) return;
-
+    const isPartial = typeof partialAmount === 'number' && partialAmount > 0 && partialAmount < debt.amount;
+    const paymentAmount = isPartial ? partialAmount : debt.amount;
+    const remainingAmount = isPartial ? debt.amount - partialAmount : 0;
     const now = new Date();
     const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
+    const updatedDebt: Debt = {
+      ...debt,
+      amount: remainingAmount,
+      isSettled: !isPartial,
+      notes: isPartial
+        ? `${debt.notes ? debt.notes + ' | ' : ''}Paid ₹${paymentAmount.toLocaleString()} on ${todayStr} (Remaining: ₹${remainingAmount.toLocaleString()})`
+        : debt.notes,
+    };
+
+    setDebts((prev) =>
+      prev.map((d) => (d.id === debtId ? updatedDebt : d))
+    );
+    SupabaseService.syncDebtUpsert(updatedDebt);
+
+    if (!autoLogTransaction) return;
+
     if (debt.debtType === 'owed_to_user') {
-      // Money was owed to Sir -> Settle means it has been received/recovered!
+      // Money was owed to Sir -> Settle/recovery means incoming money!
       const newTx: Transaction = {
         id: `tx-${Date.now()}`,
         userId: userSettings.userId,
-        rawPrompt: `Settled receivable: ${debt.title}`,
+        rawPrompt: isPartial ? `Partial debt recovery: ₹${paymentAmount} from ${debt.title}` : `Settled receivable: ${debt.title}`,
         merchant: debt.title,
-        amount: debt.amount,
+        amount: paymentAmount,
         category: 'Debt Recovery / Refund',
         transactionType: 'income',
         isDiscretionary: false,
@@ -364,13 +405,13 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
       setTransactions((prev) => [newTx, ...prev]);
       SupabaseService.syncTransactionInsert(newTx);
     } else {
-      // Sir owed money -> Settle means it has been paid off
+      // Sir owed money -> Settle/repay means expense
       const newTx: Transaction = {
         id: `tx-${Date.now()}`,
         userId: userSettings.userId,
-        rawPrompt: `Settled liability: ${debt.title}`,
+        rawPrompt: isPartial ? `Partial debt payment: ₹${paymentAmount} for ${debt.title}` : `Settled liability: ${debt.title}`,
         merchant: debt.title,
-        amount: debt.amount,
+        amount: paymentAmount,
         category: 'Debt Repayment',
         transactionType: 'expense',
         isDiscretionary: false,
@@ -1010,6 +1051,7 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
           notes: result.autoAction.note || 'Paid on behalf of roommate for rent. Recover once paid.',
         };
         setDebts((prev) => [autoDebt, ...prev]);
+        SupabaseService.syncDebtUpsert(autoDebt);
       } else if (result.autoAction.type === 'create_payable') {
         const autoDebt: Debt = {
           id: `debt-${Date.now()}`,
@@ -1021,6 +1063,8 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
           isSettled: false,
           notes: result.autoAction.note || 'Dene hain (Payable logged via J.A.R.V.I.S.)',
         };
+        setDebts((prev) => [autoDebt, ...prev]);
+        SupabaseService.syncDebtUpsert(autoDebt);
       } else if (result.autoAction.type === 'create_goal' && result.autoAction.goalData) {
         addGoal({
           name: result.autoAction.goalData.name,
@@ -1100,33 +1144,55 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
         }
       } else if (result.autoAction.type === 'settle_debt') {
         const query = (result.autoAction.settleCounterparty || result.autoAction.debtTitle || '').toLowerCase();
-        setDebts((prev) =>
-          prev.map((d) =>
-            d.title.toLowerCase().includes(query) || (query.includes('sharma') && d.title.toLowerCase().includes('sharma'))
-              ? { ...d, isSettled: true }
-              : d
+        const payAmount = result.autoAction.debtAmount || (result.amount > 0 ? result.amount : undefined);
+
+        const matchingDebt = debts.find((d) =>
+          !d.isSettled && (
+            (query && d.title.toLowerCase().includes(query)) ||
+            (query.includes('sharma') && d.title.toLowerCase().includes('sharma')) ||
+            (query.includes('roommate') && d.title.toLowerCase().includes('roommate')) ||
+            (query.includes('friend') && d.title.toLowerCase().includes('friend'))
           )
-        );
+        ) || debts.find((d) => !d.isSettled);
+
+        if (matchingDebt) {
+          settleDebt(matchingDebt.id, false, payAmount);
+        }
       } else if (result.autoAction.type === 'offset_debt') {
         // Offset against existing dues: remove temporary receivable and update net due
-        setDebts((prev) => {
-          const filtered = prev.filter(
-            (d) => !d.title.includes('Roommate (Rent Share)') && !d.title.includes('Net Due')
-          );
-          const offsetDebt: Debt = {
-            id: `debt-${Date.now()}`,
-            userId: userSettings.userId,
-            title: result.autoAction?.debtTitle || 'Roommate Net Due (After ₹5k Rent Offset)',
-            amount: result.autoAction?.debtAmount || 15000,
-            debtType: 'owed_by_user',
-            dueDate: 'After Pay Day (8th Sep)',
-            isSettled: false,
-            notes:
-              result.autoAction?.note ||
-              'Deducted ₹5,000 rent share from ₹20,000 prior dues. Remaining balance to pay: ₹15,000.',
-          };
-          return [offsetDebt, ...filtered];
-        });
+        const filtered = debts.filter(
+          (d) => !d.title.includes('Roommate (Rent Share)') && !d.title.includes('Net Due')
+        );
+        const offsetDebt: Debt = {
+          id: `debt-${Date.now()}`,
+          userId: userSettings.userId,
+          title: result.autoAction?.debtTitle || 'Roommate Net Due (After ₹5k Rent Offset)',
+          amount: result.autoAction?.debtAmount || 15000,
+          debtType: 'owed_by_user',
+          dueDate: 'After Pay Day (8th Sep)',
+          isSettled: false,
+          notes:
+            result.autoAction?.note ||
+            'Deducted ₹5,000 rent share from ₹20,000 prior dues. Remaining balance to pay: ₹15,000.',
+        };
+        setDebts([offsetDebt, ...filtered]);
+        SupabaseService.syncDebtUpsert(offsetDebt);
+      } else if (result.autoAction.type === 'flip_last_debt') {
+        flipLastDebt();
+      } else if (result.autoAction.type === 'edit_last_transaction') {
+        if (result.autoAction.transactionUpdate) {
+          editLastTransaction(result.autoAction.transactionUpdate);
+        } else if (result.amount > 0) {
+          editLastTransaction({
+            amount: result.amount,
+            merchant: result.merchant || undefined,
+            category: result.category || undefined,
+          });
+        }
+      } else if (result.autoAction.type === 'edit_last_debt') {
+        if (debts.length > 0 && result.autoAction.debtUpdate) {
+          editDebt(debts[0].id, result.autoAction.debtUpdate);
+        }
       }
     }
 
@@ -1184,6 +1250,65 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
     SupabaseService.syncTransactionDelete(transactionId);
   };
 
+  const editTransaction = (transactionId: string, updates: Partial<Transaction>) => {
+    let updatedTx: Transaction | null = null;
+    setTransactions((prev) =>
+      prev.map((tx) => {
+        if (tx.id === transactionId) {
+          updatedTx = { ...tx, ...updates };
+          return updatedTx;
+        }
+        return tx;
+      })
+    );
+    if (updatedTx) {
+      SupabaseService.syncTransactionInsert(updatedTx);
+    }
+  };
+
+  const editDebt = (debtId: string, updates: Partial<Debt>) => {
+    let updatedDebt: Debt | null = null;
+    setDebts((prev) =>
+      prev.map((d) => {
+        if (d.id === debtId) {
+          updatedDebt = { ...d, ...updates };
+          return updatedDebt;
+        }
+        return d;
+      })
+    );
+    if (updatedDebt) {
+      SupabaseService.syncDebtUpsert(updatedDebt);
+    }
+  };
+
+  const flipDebtDirection = (debtId: string) => {
+    const debt = debts.find((d) => d.id === debtId);
+    if (!debt) return;
+    const newType: DebtType = debt.debtType === 'owed_by_user' ? 'owed_to_user' : 'owed_by_user';
+    const newTitle = debt.title
+      .replace(/\(Payable\)/i, '(Receivable)')
+      .replace(/\(Receivable\)/i, '(Payable)');
+
+    const updated: Debt = {
+      ...debt,
+      debtType: newType,
+      title: newTitle,
+    };
+    setDebts((prev) => prev.map((d) => (d.id === debtId ? updated : d)));
+    SupabaseService.syncDebtUpsert(updated);
+  };
+
+  const flipLastDebt = () => {
+    if (debts.length === 0) return;
+    flipDebtDirection(debts[0].id);
+  };
+
+  const editLastTransaction = (updates: Partial<Transaction>) => {
+    if (transactions.length === 0) return;
+    editTransaction(transactions[0].id, updates);
+  };
+
   const resetTodaySpending = () => {
     setTransactions((prev) => prev.filter((tx) => tx.date !== todayStr));
   };
@@ -1224,6 +1349,11 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
         depositToGoal,
         withdrawFromGoal,
         settleDebt,
+        editTransaction,
+        editDebt,
+        flipDebtDirection,
+        flipLastDebt,
+        editLastTransaction,
         addGoal,
         deleteGoal,
         addDebt,
