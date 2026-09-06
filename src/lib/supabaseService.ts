@@ -358,4 +358,41 @@ export class SupabaseService {
       console.warn('Supabase chat message upsert exception:', e);
     }
   }
+
+  // --- Delete Session Messages from Database ---
+  public static async deleteSessionMessages(sessionId: string): Promise<void> {
+    if (!isSupabaseConfigured || !supabase) return;
+    try {
+      // 1. Try deleting by session_id column
+      const { error: colErr } = await supabase.from('chat_messages').delete().eq('session_id', sessionId);
+      // 2. Also delete where metadata->>sessionId matches
+      const { error: metaErr } = await supabase.from('chat_messages').delete().filter('metadata->>sessionId', 'eq', sessionId);
+
+      if (colErr && metaErr) {
+        // Fallback: fetch all and delete by IDs
+        const { data: rows } = await supabase.from('chat_messages').select('id, metadata, session_id');
+        if (rows && rows.length > 0) {
+          const idsToDelete = rows
+            .filter((r: any) => r.session_id === sessionId || r.metadata?.sessionId === sessionId)
+            .map((r: any) => r.id);
+          if (idsToDelete.length > 0) {
+            await supabase.from('chat_messages').delete().in('id', idsToDelete);
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('Supabase deleteSessionMessages exception:', e);
+    }
+  }
+
+  // --- Clear All Chat Messages from Database ---
+  public static async clearAllChatMessages(): Promise<void> {
+    if (!isSupabaseConfigured || !supabase) return;
+    try {
+      const { error } = await supabase.from('chat_messages').delete().neq('id', '__keep_schema__');
+      if (error) console.warn('Supabase clearAllChatMessages error:', error.message);
+    } catch (e) {
+      console.warn('Supabase clearAllChatMessages exception:', e);
+    }
+  }
 }

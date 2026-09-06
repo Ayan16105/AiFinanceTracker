@@ -24,6 +24,7 @@ import { PayCycleInfo, getPayCycleInfo } from '@/lib/cycleUtils';
 import { SupabaseService } from '@/lib/supabaseService';
 import { generateJarvisGreeting } from '@/lib/jarvisGreetings';
 import { parseBankSms } from '@/lib/bankSmsParser';
+import { generateGeminiSessionTitle } from '@/lib/sessionUtils';
 
 export interface CloudSyncStatus {
   connected: boolean;
@@ -48,6 +49,7 @@ interface FinanceContextType {
   createNewSession: (customTitle?: string) => string;
   switchSession: (sessionId: string) => void;
   deleteSession: (sessionId: string) => void;
+  clearAllSessions: () => Promise<void>;
   processBankSms: (smsText: string) => { success: boolean; message: string };
   confirmBankAlertTransaction: (data: {
     amount: number;
@@ -231,8 +233,16 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
               const sId = m.metadata?.sessionId || m.sessionId;
               if (sId) {
                 if (!sessionMap.has(sId)) {
+                  const userMsgInSession = cloudData.chatMessages?.find(
+                    (msg) => (msg.metadata?.sessionId === sId || msg.sessionId === sId) && msg.sender === 'user'
+                  );
+                  const cleanTitle = generateGeminiSessionTitle(
+                    userMsgInSession?.text || m.text || '',
+                    m.metadata?.merchant,
+                    m.metadata?.category
+                  );
                   sessionMap.set(sId, {
-                    title: m.metadata?.merchant ? `${m.metadata.merchant} & Telemetry` : `Briefing (${sId.slice(-4)})`,
+                    title: cleanTitle,
                     createdAt: m.timestamp || new Date().toISOString(),
                     lastActiveAt: m.timestamp || new Date().toISOString(),
                   });
@@ -615,7 +625,7 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
   // J.A.R.V.I.S. Humorous Butler Greeting on new or empty session
   useEffect(() => {
     const sessionMessages = chatMessages.filter(
-      (m) => (m.sessionId || DEFAULT_SESSION_ID) === currentSessionId
+      (m) => (m.sessionId || m.metadata?.sessionId || DEFAULT_SESSION_ID) === currentSessionId
     );
 
     if (sessionMessages.length === 0) {
@@ -631,7 +641,7 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
       const now = new Date();
       const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       const greetingMsg: ChatMessage = {
-        id: `ai-greet-${Date.now()}`,
+        id: `ai-greet-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
         sessionId: currentSessionId,
         sender: 'ai',
         text: greetingText,
@@ -647,13 +657,13 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
       setChatMessages((prev) => [...prev, greetingMsg]);
       SupabaseService.syncChatMessage(greetingMsg);
     }
-  }, [currentSessionId]);
+  }, [currentSessionId, chatMessages.length]);
 
   const createNewSession = (customTitle?: string): string => {
     const newId = `sess-${Date.now()}`;
     const d = new Date();
     const dateLabel = d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
-    const title = customTitle || `Briefing ${dateLabel} (${sessions.length + 1})`;
+    const title = customTitle || `Briefing (${dateLabel})`;
     const newSession: ChatSession = {
       id: newId,
       title,
@@ -664,51 +674,85 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
     setSessions((prev) => [newSession, ...prev]);
     setCurrentSessionId(newId);
 
-    const greetingText = generateJarvisGreeting({
-      userName: userSettings.userName || 'Ayan',
-      userTitle: userSettings.userTitle || 'Sir',
-      dailyLimit: userSettings.dailySpendLimit,
-      spentToday,
-      safeToSpendRemaining,
-      daysToSalary: payCycleInfo?.daysRemaining,
-    });
-
-    const now = new Date();
-    const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const greetingMsg: ChatMessage = {
-      id: `ai-greet-${Date.now()}`,
-      sessionId: newId,
-      sender: 'ai',
-      text: greetingText,
-      sentiment: spentToday > userSettings.dailySpendLimit ? 'scold' : 'neutral',
-      timestamp: timeStr,
-      metadata: {
-        sessionId: newId,
-        remainingSafeToSpend: safeToSpendRemaining,
-        tomorrowAdjustedCap: tomorrowAdjustedCap,
-      },
-    };
-
-    setChatMessages((prev) => [...prev, greetingMsg]);
-    SupabaseService.syncChatMessage(greetingMsg);
+    try {
+      localStorage.setItem('jarvis_active_session_id', newId);
+    } catch {}
 
     return newId;
   };
 
   const switchSession = (sessionId: string) => {
     setCurrentSessionId(sessionId);
+    try {
+      localStorage.setItem('jarvis_active_session_id', sessionId);
+    } catch {}
   };
 
   const deleteSession = (sessionId: string) => {
-    if (sessions.length <= 1) return;
-    setSessions((prev) => prev.filter((s) => s.id !== sessionId));
-    setChatMessages((prev) => prev.filter((m) => (m.sessionId || DEFAULT_SESSION_ID) !== sessionId));
-    if (currentSessionId === sessionId) {
-      const remaining = sessions.filter((s) => s.id !== sessionId);
-      if (remaining.length > 0) {
-        setCurrentSessionId(remaining[0].id);
-      }
+    // 1. Delete from Supabase Database
+    SupabaseService.deleteSessionMessages(sessionId);
+
+    // 2. Remove session messages from state & localStorage
+    setChatMessages((prev) => {
+      const filtered = prev.filter(
+        (m) => (m.sessionId || m.metadata?.sessionId || DEFAULT_SESSION_ID) !== sessionId
+      );
+      try {
+        localStorage.setItem('jarvis_chat_messages', JSON.stringify(filtered));
+      } catch {}
+      return filtered;
+    });
+
+    // 3. Remove session from sessions list
+    const remaining = sessions.filter((s) => s.id !== sessionId);
+    let nextList = remaining;
+    let nextId = currentSessionId;
+
+    if (remaining.length === 0) {
+      const todayId = getTodaySessionId();
+      const freshSession: ChatSession = {
+        id: todayId,
+        title: 'Financial Briefing',
+        createdAt: new Date().toISOString(),
+        lastActiveAt: new Date().toISOString(),
+      };
+      nextList = [freshSession];
+      nextId = todayId;
+    } else if (currentSessionId === sessionId) {
+      nextId = remaining[0].id;
     }
+
+    setSessions(nextList);
+    setCurrentSessionId(nextId);
+
+    try {
+      localStorage.setItem('jarvis_chat_sessions', JSON.stringify(nextList));
+      localStorage.setItem('jarvis_active_session_id', nextId);
+    } catch {}
+  };
+
+  const clearAllSessions = async () => {
+    // 1. Delete all chat messages from Supabase Database
+    await SupabaseService.clearAllChatMessages();
+
+    // 2. Reset sessions state and localStorage
+    const todayId = getTodaySessionId();
+    const freshSession: ChatSession = {
+      id: todayId,
+      title: 'Financial Briefing',
+      createdAt: new Date().toISOString(),
+      lastActiveAt: new Date().toISOString(),
+    };
+
+    setSessions([freshSession]);
+    setChatMessages([]);
+    setCurrentSessionId(todayId);
+
+    try {
+      localStorage.setItem('jarvis_chat_sessions', JSON.stringify([freshSession]));
+      localStorage.removeItem('jarvis_chat_messages');
+      localStorage.setItem('jarvis_active_session_id', todayId);
+    } catch {}
   };
 
   const processBankSms = (smsText: string): { success: boolean; message: string } => {
@@ -1007,6 +1051,30 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
       result.merchant?.toLowerCase().includes('simulat') ||
       result.merchant?.toLowerCase().includes('hypothetical') ||
       result.category?.toLowerCase().includes('simulation');
+
+    // 1.5 Update Session Title dynamically like Gemini
+    setSessions((prev) =>
+      prev.map((s) => {
+        if (s.id === currentSessionId) {
+          const isGeneric =
+            !s.title ||
+            s.title.startsWith('Briefing') ||
+            s.title.startsWith('Financial Briefing') ||
+            s.title.startsWith('Session') ||
+            s.title === 'Current Session' ||
+            s.title.includes('(');
+          if (isGeneric) {
+            const geminiHeading = generateGeminiSessionTitle(prompt, result.merchant, result.category);
+            return {
+              ...s,
+              title: geminiHeading,
+              lastActiveAt: new Date().toISOString(),
+            };
+          }
+        }
+        return s;
+      })
+    );
 
     // 2. Add New Transaction to Journal (only if amount > 0, NOT a simulation, and NOT handled as multi-settlement)
     const isMultiSettlement = Boolean(result.autoActions && result.autoActions.length > 1);
@@ -1442,6 +1510,7 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
         createNewSession,
         switchSession,
         deleteSession,
+        clearAllSessions,
         processBankSms,
         confirmBankAlertTransaction,
         spentToday,
