@@ -10,6 +10,7 @@ import {
   ChatMessage,
   ChatSession,
   ParseExpenseResult,
+  AutoAction,
 } from '@/types';
 import {
   initialUserSettings,
@@ -110,7 +111,18 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
   const [transactions, setTransactions] = useState<Transaction[]>(initialTransactions);
   const [goals, setGoals] = useState<SavingsGoal[]>(initialGoals);
   const [debts, setDebts] = useState<Debt[]>(initialDebts);
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>(initialChatMessages);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const saved = localStorage.getItem('jarvis_chat_messages');
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        }
+      } catch {}
+    }
+    return initialChatMessages;
+  });
 
   // Chat Sessions state (One persistent session per day)
   const [sessions, setSessions] = useState<ChatSession[]>(() => {
@@ -211,6 +223,9 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
           if (cloudData.debts !== undefined) setDebts(cloudData.debts);
           if (cloudData.chatMessages !== undefined && cloudData.chatMessages.length > 0) {
             setChatMessages(cloudData.chatMessages);
+            try {
+              localStorage.setItem('jarvis_chat_messages', JSON.stringify(cloudData.chatMessages));
+            } catch {}
             const sessionMap = new Map<string, { title: string; createdAt: string; lastActiveAt: string }>();
             cloudData.chatMessages.forEach((m) => {
               const sId = m.metadata?.sessionId || m.sessionId;
@@ -294,11 +309,10 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
   };
 
   const todayStr = getLocalDateStr();
-  const utcTodayStr = new Date().toISOString().split('T')[0];
 
   // Calculate today's discretionary expense sum (fixed household rent does not drain daily pocket allowance)
   const spentToday = transactions
-    .filter((tx) => (tx.date === todayStr || tx.date === utcTodayStr) && tx.transactionType === 'expense' && tx.isDiscretionary !== false)
+    .filter((tx) => tx.date === todayStr && tx.transactionType === 'expense' && tx.isDiscretionary !== false)
     .reduce((sum, tx) => sum + tx.amount, 0);
 
   const payCycleInfo = getPayCycleInfo(userSettings.salaryDayOfMonth || 7);
@@ -589,6 +603,14 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
       localStorage.setItem('jarvis_active_session_id', currentSessionId);
     } catch {}
   }, [currentSessionId]);
+
+  useEffect(() => {
+    try {
+      if (chatMessages && chatMessages.length > 0) {
+        localStorage.setItem('jarvis_chat_messages', JSON.stringify(chatMessages));
+      }
+    } catch {}
+  }, [chatMessages]);
 
   // J.A.R.V.I.S. Humorous Butler Greeting on new or empty session
   useEffect(() => {
@@ -986,8 +1008,10 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
       result.merchant?.toLowerCase().includes('hypothetical') ||
       result.category?.toLowerCase().includes('simulation');
 
-    // 2. Add New Transaction to Journal (only if amount > 0 and NOT a simulation)
-    if (result.amount > 0 && !isHypotheticalPrompt) {
+    // 2. Add New Transaction to Journal (only if amount > 0, NOT a simulation, and NOT handled as multi-settlement)
+    const isMultiSettlement = Boolean(result.autoActions && result.autoActions.length > 1);
+
+    if (result.amount > 0 && !isHypotheticalPrompt && !isMultiSettlement) {
       const newTx: Transaction = {
         id: `tx-${Date.now()}`,
         userId: userSettings.userId,
@@ -1020,11 +1044,109 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
     }
 
     // 3. Execute J.A.R.V.I.S. Actions (Full App Navigation & Control)
-    if (result.autoAction) {
-      if (result.autoAction.type === 'navigate' && result.autoAction.navigateTarget) {
-        setActiveTab(result.autoAction.navigateTarget);
-      } else if (result.autoAction.type === 'update_budget' && result.autoAction.budgetUpdate) {
-        const bu = result.autoAction.budgetUpdate;
+    const actionsToExecute: AutoAction[] = (result.autoActions && result.autoActions.length > 0)
+      ? result.autoActions
+      : (result.autoAction ? [result.autoAction] : []);
+
+    // 3.1 Handle settle_debt actions (single or batch multi-debt settlements)
+    const settleActions = actionsToExecute.filter((a) => a.type === 'settle_debt');
+    if (settleActions.length > 0) {
+      const newTxList: Transaction[] = [];
+      setDebts((prevDebts) => {
+        const currentList = [...prevDebts];
+        for (let i = 0; i < settleActions.length; i++) {
+          const act = settleActions[i];
+          const query = (act.settleCounterparty || act.debtTitle || '').toLowerCase().trim();
+          const payAmount = act.debtAmount || (settleActions.length === 1 && result.amount > 0 ? result.amount : undefined);
+
+          const idx = currentList.findIndex((d) => {
+            if (d.isSettled) return false;
+            const t = d.title.toLowerCase();
+            if (!query) return true;
+            if (t === query || t.includes(query) || query.includes(t)) return true;
+            const tokens = query.split(/\s+/).filter((tok) => tok.length > 1);
+            if (tokens.length > 0 && tokens.every((tok) => t.includes(tok))) return true;
+            return false;
+          });
+
+          if (idx !== -1) {
+            const debt = currentList[idx];
+            const actualPay = typeof payAmount === 'number' && payAmount > 0 ? Math.min(payAmount, debt.amount) : debt.amount;
+            const isPartial = actualPay < debt.amount;
+            const remaining = Math.max(0, debt.amount - actualPay);
+
+            const updatedDebt: Debt = {
+              ...debt,
+              amount: remaining,
+              isSettled: remaining === 0,
+              notes: isPartial
+                ? `${debt.notes ? debt.notes + ' | ' : ''}Paid ₹${actualPay.toLocaleString()} on ${todayStr} (Remaining: ₹${remaining.toLocaleString()})`
+                : (debt.notes ? `${debt.notes} | Settled in full on ${todayStr}` : `Settled in full on ${todayStr}`),
+            };
+
+            currentList[idx] = updatedDebt;
+            SupabaseService.syncDebtUpsert(updatedDebt);
+
+            if (settleActions.length > 1) {
+              const txTime = new Date();
+              const newTx: Transaction = {
+                id: `tx-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 6)}`,
+                userId: userSettings.userId,
+                rawPrompt: `Debt Payment: ₹${actualPay.toLocaleString()} for ${debt.title}`,
+                merchant: debt.title,
+                amount: actualPay,
+                category: debt.debtType === 'owed_to_user' ? 'Debt Recovery / Refund' : 'Debt Repayment',
+                transactionType: debt.debtType === 'owed_to_user' ? 'income' : 'expense',
+                isDiscretionary: false,
+                isOverLimit: false,
+                overLimitAmount: 0,
+                date: todayStr,
+                time: txTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                createdAt: txTime.toISOString(),
+              };
+              newTxList.push(newTx);
+              SupabaseService.syncTransactionInsert(newTx);
+            }
+          } else {
+            // Debt counterparty not yet in active list, still record individual transaction if multiple settlements
+            if (settleActions.length > 1 && typeof payAmount === 'number' && payAmount > 0) {
+              const txTime = new Date();
+              const counterpartyName = query ? (query.charAt(0).toUpperCase() + query.slice(1)) : 'Debt Repayment';
+              const newTx: Transaction = {
+                id: `tx-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 6)}`,
+                userId: userSettings.userId,
+                rawPrompt: `Debt Payment: ₹${payAmount.toLocaleString()} for ${counterpartyName}`,
+                merchant: counterpartyName,
+                amount: payAmount,
+                category: 'Debt Repayment',
+                transactionType: 'expense',
+                isDiscretionary: false,
+                isOverLimit: false,
+                overLimitAmount: 0,
+                date: todayStr,
+                time: txTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                createdAt: txTime.toISOString(),
+              };
+              newTxList.push(newTx);
+              SupabaseService.syncTransactionInsert(newTx);
+            }
+          }
+        }
+        return currentList;
+      });
+
+      if (newTxList.length > 0) {
+        setTransactions((prev) => [...newTxList, ...prev]);
+      }
+    }
+
+    // 3.2 Execute non-settle actions
+    for (const action of actionsToExecute) {
+      if (action.type === 'settle_debt') continue; // Handled in batch above
+      if (action.type === 'navigate' && action.navigateTarget) {
+        setActiveTab(action.navigateTarget);
+      } else if (action.type === 'update_budget' && action.budgetUpdate) {
+        const bu = action.budgetUpdate;
         const newSalary = bu.salary !== undefined ? bu.salary : userSettings.monthlySalary;
         const newFixed = bu.fixedBills !== undefined ? bu.fixedBills : userSettings.householdFundTarget;
         const debtBudget = totalOwedByUser > 0 ? Math.min(totalOwedByUser, 7000) : 0;
@@ -1039,38 +1161,38 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
           householdFundTarget: newFixed,
           dailySpendLimit: newDaily,
         });
-      } else if (result.autoAction.type === 'create_receivable') {
+      } else if (action.type === 'create_receivable') {
         const autoDebt: Debt = {
           id: `debt-${Date.now()}`,
           userId: userSettings.userId,
-          title: result.autoAction.debtTitle || 'Roommate (Rent Share)',
-          amount: result.autoAction.debtAmount || 5000,
+          title: action.debtTitle || 'Roommate (Rent Share)',
+          amount: action.debtAmount || 5000,
           debtType: 'owed_to_user',
           dueDate: 'On Roommate Salary',
           isSettled: false,
-          notes: result.autoAction.note || 'Paid on behalf of roommate for rent. Recover once paid.',
+          notes: action.note || 'Paid on behalf of roommate for rent. Recover once paid.',
         };
         setDebts((prev) => [autoDebt, ...prev]);
         SupabaseService.syncDebtUpsert(autoDebt);
-      } else if (result.autoAction.type === 'create_payable') {
+      } else if (action.type === 'create_payable') {
         const autoDebt: Debt = {
           id: `debt-${Date.now()}`,
           userId: userSettings.userId,
-          title: result.autoAction.debtTitle || 'Friend Loan (Payable)',
-          amount: result.autoAction.debtAmount || 10000,
+          title: action.debtTitle || 'Friend Loan (Payable)',
+          amount: action.debtAmount || 10000,
           debtType: 'owed_by_user',
-          dueDate: result.autoAction.dueDate || 'On Pay Day',
+          dueDate: action.dueDate || 'On Pay Day',
           isSettled: false,
-          notes: result.autoAction.note || 'Dene hain (Payable logged via J.A.R.V.I.S.)',
+          notes: action.note || 'Dene hain (Payable logged via J.A.R.V.I.S.)',
         };
         setDebts((prev) => [autoDebt, ...prev]);
         SupabaseService.syncDebtUpsert(autoDebt);
-      } else if (result.autoAction.type === 'create_goal' && result.autoAction.goalData) {
+      } else if (action.type === 'create_goal' && action.goalData) {
         addGoal({
-          name: result.autoAction.goalData.name,
-          targetAmount: result.autoAction.goalData.targetAmount,
+          name: action.goalData.name,
+          targetAmount: action.goalData.targetAmount,
           currentAmount: 0,
-          monthlyAllocation: result.autoAction.goalData.monthlyAllocation || Math.round(result.autoAction.goalData.targetAmount / 12),
+          monthlyAllocation: action.goalData.monthlyAllocation || Math.round(action.goalData.targetAmount / 12),
           isShielded: true,
           milestones: [
             { id: `m1-${Date.now()}`, title: 'First 25% Deposit', status: 'current' },
@@ -1078,8 +1200,8 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
             { id: `m3-${Date.now()}`, title: 'Goal Complete', status: 'pending' }
           ]
         });
-      } else if (result.autoAction.type === 'allocate_goal') {
-        const alloc = result.autoAction.goalAllocation;
+      } else if (action.type === 'allocate_goal') {
+        const alloc = action.goalAllocation;
         const targetName = (alloc?.goalName || result.merchant || '').toLowerCase();
         const allocAmount = alloc?.amount || result.amount;
 
@@ -1110,8 +1232,8 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
             })
           );
         }
-      } else if (result.autoAction.type === 'withdraw_goal') {
-        const withdraw = result.autoAction.goalWithdrawal;
+      } else if (action.type === 'withdraw_goal') {
+        const withdraw = action.goalWithdrawal;
         const targetName = (withdraw?.goalName || result.merchant || '').toLowerCase();
         const withdrawAmount = Math.abs(withdraw?.amount || result.amount);
 
@@ -1142,23 +1264,7 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
             })
           );
         }
-      } else if (result.autoAction.type === 'settle_debt') {
-        const query = (result.autoAction.settleCounterparty || result.autoAction.debtTitle || '').toLowerCase();
-        const payAmount = result.autoAction.debtAmount || (result.amount > 0 ? result.amount : undefined);
-
-        const matchingDebt = debts.find((d) =>
-          !d.isSettled && (
-            (query && d.title.toLowerCase().includes(query)) ||
-            (query.includes('sharma') && d.title.toLowerCase().includes('sharma')) ||
-            (query.includes('roommate') && d.title.toLowerCase().includes('roommate')) ||
-            (query.includes('friend') && d.title.toLowerCase().includes('friend'))
-          )
-        ) || debts.find((d) => !d.isSettled);
-
-        if (matchingDebt) {
-          settleDebt(matchingDebt.id, false, payAmount);
-        }
-      } else if (result.autoAction.type === 'offset_debt') {
+      } else if (action.type === 'offset_debt') {
         // Offset against existing dues: remove temporary receivable and update net due
         const filtered = debts.filter(
           (d) => !d.title.includes('Roommate (Rent Share)') && !d.title.includes('Net Due')
@@ -1166,22 +1272,22 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
         const offsetDebt: Debt = {
           id: `debt-${Date.now()}`,
           userId: userSettings.userId,
-          title: result.autoAction?.debtTitle || 'Roommate Net Due (After ₹5k Rent Offset)',
-          amount: result.autoAction?.debtAmount || 15000,
+          title: action?.debtTitle || 'Roommate Net Due (After ₹5k Rent Offset)',
+          amount: action?.debtAmount || 15000,
           debtType: 'owed_by_user',
           dueDate: 'After Pay Day (8th Sep)',
           isSettled: false,
           notes:
-            result.autoAction?.note ||
+            action?.note ||
             'Deducted ₹5,000 rent share from ₹20,000 prior dues. Remaining balance to pay: ₹15,000.',
         };
         setDebts([offsetDebt, ...filtered]);
         SupabaseService.syncDebtUpsert(offsetDebt);
-      } else if (result.autoAction.type === 'flip_last_debt') {
+      } else if (action.type === 'flip_last_debt') {
         flipLastDebt();
-      } else if (result.autoAction.type === 'edit_last_transaction') {
-        if (result.autoAction.transactionUpdate) {
-          editLastTransaction(result.autoAction.transactionUpdate);
+      } else if (action.type === 'edit_last_transaction') {
+        if (action.transactionUpdate) {
+          editLastTransaction(action.transactionUpdate);
         } else if (result.amount > 0) {
           editLastTransaction({
             amount: result.amount,
@@ -1189,9 +1295,9 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
             category: result.category || undefined,
           });
         }
-      } else if (result.autoAction.type === 'edit_last_debt') {
-        if (debts.length > 0 && result.autoAction.debtUpdate) {
-          editDebt(debts[0].id, result.autoAction.debtUpdate);
+      } else if (action.type === 'edit_last_debt') {
+        if (debts.length > 0 && action.debtUpdate) {
+          editDebt(debts[0].id, action.debtUpdate);
         }
       }
     }

@@ -148,26 +148,33 @@ function mapDebtToDb(debt: Debt) {
 
 // Helper to convert snake_case DB row to camelCase ChatMessage
 function mapDbToChatMessage(row: any): ChatMessage {
+  const meta = row.metadata && typeof row.metadata === 'object' ? row.metadata : undefined;
   return {
     id: row.id,
+    sessionId: row.session_id || meta?.sessionId || undefined,
     sender: row.sender,
     text: row.text,
     sentiment: row.sentiment,
     timestamp: row.timestamp || '',
-    metadata: row.metadata && typeof row.metadata === 'object' ? row.metadata : undefined,
+    metadata: meta,
   };
 }
 
 // Helper to convert camelCase ChatMessage to snake_case DB object
 function mapChatMessageToDb(msg: ChatMessage) {
+  const sessionId = msg.sessionId || msg.metadata?.sessionId || null;
   return {
     id: msg.id,
     user_id: 'default_user',
+    session_id: sessionId,
     sender: msg.sender,
     text: msg.text,
     sentiment: msg.sentiment,
     timestamp: msg.timestamp,
-    metadata: msg.metadata || {},
+    metadata: {
+      ...(msg.metadata || {}),
+      sessionId: sessionId || undefined,
+    },
     created_at: new Date().toISOString(),
   };
 }
@@ -337,7 +344,16 @@ export class SupabaseService {
     try {
       const dbRow = mapChatMessageToDb(msg);
       const { error } = await supabase.from('chat_messages').upsert(dbRow);
-      if (error) console.warn('Supabase upsert chat message error:', error.message);
+      if (error) {
+        if (error.code === '42703') {
+          // Column session_id not yet added to SQL table, omit column and rely on metadata JSONB
+          const { session_id, ...baseRow } = dbRow as any;
+          const { error: fbErr } = await supabase.from('chat_messages').upsert(baseRow);
+          if (fbErr) console.warn('Supabase fallback chat upsert error:', fbErr.message);
+        } else {
+          console.warn('Supabase upsert chat message error:', error.message);
+        }
+      }
     } catch (e) {
       console.warn('Supabase chat message upsert exception:', e);
     }

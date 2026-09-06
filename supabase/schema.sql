@@ -87,6 +87,7 @@ CREATE TABLE IF NOT EXISTS public.debts (
 CREATE TABLE IF NOT EXISTS public.chat_messages (
     id TEXT PRIMARY KEY DEFAULT uuid_generate_v4()::text,
     user_id TEXT NOT NULL DEFAULT 'default_user',
+    session_id TEXT,
     sender TEXT NOT NULL CHECK (sender IN ('user', 'ai')),
     text TEXT NOT NULL,
     sentiment TEXT NOT NULL CHECK (sentiment IN ('neutral', 'praise', 'scold')),
@@ -94,6 +95,10 @@ CREATE TABLE IF NOT EXISTS public.chat_messages (
     metadata JSONB DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Upgrade existing chat_messages table if session_id column does not exist yet:
+ALTER TABLE public.chat_messages ADD COLUMN IF NOT EXISTS session_id TEXT;
+CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON public.chat_messages(session_id);
 
 -- ==============================================================================
 -- ROW LEVEL SECURITY (RLS) POLICIES

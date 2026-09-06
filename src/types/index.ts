@@ -179,5 +179,6 @@ export interface ParseExpenseResult {
   breachCode?: string;
   tomorrowAdjustedCap: number;
   autoAction?: AutoAction;
+  autoActions?: AutoAction[];
 }
 

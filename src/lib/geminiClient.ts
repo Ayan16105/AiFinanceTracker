@@ -1,5 +1,5 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import { ParseExpenseResult } from '@/types';
+import { ParseExpenseResult, AutoAction } from '@/types';
 
 const SYSTEM_PROMPT = `
 You are J.A.R.V.I.S., Sir Ayan's ultra-smart, polite, witty, yet deeply helpful personal AI Financial Assistant.
@@ -54,6 +54,18 @@ DEBTS, LOANS & OBLIGATIONS (CRITICAL):
      --> Set amount: 0, transaction_type: "transfer", is_discretionary: false.
      --> Emit auto_action: { "type": "edit_last_transaction", "transactionUpdate": { "amount": number } }.
      --> Respond: "Correction applied, Sir! Adjusted the last transaction amount to ₹[newAmount]. Your daily spend figures have been recalculated."
+7. MULTIPLE DEBT SETTLEMENTS / PAYBACKS IN A SINGLE PROMPT (CRITICAL USER MANDATE):
+   - When Sir commands multiple debt repayments or settlements in one prompt (e.g., "payback 5000 to kamran and also settle 2000 and 1000 for man 1 and 2 respectively", "kamran ko 5000 aur rahul ko 2000 de diye"):
+     --> Set amount: sum of all payback amounts (e.g. 5000 + 2000 + 1000 = 8000), transaction_type: "expense", category: "Debt Repayment", merchant: "Multiple Debt Settlements", is_discretionary: false.
+     --> DO NOT PENALIZE TODAY'S DAILY SPEND LIMIT (is_discretionary: false)!
+     --> ALWAYS emit auto_actions array containing EACH individual settlement:
+         "auto_actions": [
+           { "type": "settle_debt", "settleCounterparty": "Kamran", "debtAmount": 5000, "isPartial": true },
+           { "type": "settle_debt", "settleCounterparty": "Man 1", "debtAmount": 2000, "isPartial": true },
+           { "type": "settle_debt", "settleCounterparty": "Man 2", "debtAmount": 1000, "isPartial": true }
+         ]
+     --> In ca_commentary, explain clearly each deduction:
+         "Understood, Sir! Processed compound debt settlement: deducted ₹5,000 for Kamran, ₹2,000 for Man 1, and ₹1,000 for Man 2 respectively. Balances updated on your radar!"
 
 GOALS & SAVINGS INQUIRIES & ALLOCATIONS:
 1. INQUIRIES:
@@ -254,6 +266,87 @@ export function isEnglishPrompt(text: string): boolean {
   return !hinglishPattern.test(clean);
 }
 
+// Helper to extract multi-party debt settlements/paybacks
+export function extractMultiSettlements(prompt: string): { counterparty: string; amount: number }[] | null {
+  const clean = prompt.toLowerCase().trim();
+  const settlements: { counterparty: string; amount: number }[] = [];
+
+  const isSettlement = /pay\s*back|settle|settel|paid|chukta|chuka|de\s*diye|wapas\s*diye|lautaye/i.test(clean);
+  if (!isSettlement) return null;
+
+  // Normalize common typos and syntax variations
+  const normalized = clean
+    .replace(/\btog\b/g, 'to')
+    .replace(/\bsettel\b/g, 'settle')
+    .replace(/\brespectivly\b/g, 'respectively');
+
+  if (/respectively/i.test(normalized)) {
+    // 3-part: e.g. "payback 5000 to kamran and also settle 2000 and 1000 for man 1 and 2 respectively"
+    const prefixMatch = normalized.match(
+      /(?:pay\s*back|settle|paid)?\s*(\d{2,7})\s*(?:to|ko|for)?\s*([a-z0-9\s]+?)\s*(?:and also|and|aur|\,)\s*(?:settle|paid)?\s*(\d{2,7})\s*(?:and|aur|\,)\s*(\d{2,7})\s*(?:for|to|ko)?\s*([a-z0-9\s]+?)\s*(?:and|aur|\,)\s*([a-z0-9\s]+?)\s*respectively/i
+    );
+    if (prefixMatch) {
+      const amt1 = parseInt(prefixMatch[1], 10);
+      const name1 = prefixMatch[2].replace(/^(?:to|ko|for)\s+/i, '').trim();
+      const amt2 = parseInt(prefixMatch[3], 10);
+      const amt3 = parseInt(prefixMatch[4], 10);
+      const name2 = prefixMatch[5].trim();
+      let name3 = prefixMatch[6].trim();
+      if (/^\d+$/.test(name3) && name2.match(/^([a-z\s]+)\d+$/i)) {
+        const baseName = name2.match(/^([a-z\s]+)\d+$/i)![1];
+        name3 = `${baseName.trim()} ${name3}`;
+      }
+      settlements.push({ counterparty: name1, amount: amt1 });
+      settlements.push({ counterparty: name2, amount: amt2 });
+      settlements.push({ counterparty: name3, amount: amt3 });
+      return settlements;
+    }
+
+    // 2-part: e.g. "settle 2000 and 1000 for man 1 and 2 respectively"
+    const twoMatch = normalized.match(
+      /(?:settle|paid|pay\s*back)?\s*(\d{2,7})\s*(?:and|aur|\,)\s*(\d{2,7})\s*(?:for|to|ko)?\s*([a-z0-9\s]+?)\s*(?:and|aur|\,)\s*([a-z0-9\s]+?)\s*respectively/i
+    );
+    if (twoMatch) {
+      const amt1 = parseInt(twoMatch[1], 10);
+      const amt2 = parseInt(twoMatch[2], 10);
+      const name1 = twoMatch[3].trim();
+      let name2 = twoMatch[4].trim();
+      if (/^\d+$/.test(name2) && name1.match(/^([a-z\s]+)\d+$/i)) {
+        const baseName = name1.match(/^([a-z\s]+)\d+$/i)![1];
+        name2 = `${baseName.trim()} ${name2}`;
+      }
+      settlements.push({ counterparty: name1, amount: amt1 });
+      settlements.push({ counterparty: name2, amount: amt2 });
+      return settlements;
+    }
+  }
+
+  // Clause based: "kamran ko 5000 aur rahul ko 2000 de diye" or "payback 5000 to kamran and 2000 to rahul"
+  const clauses = normalized.split(/\b(?:and also|and|aur|\,)\b/i);
+  for (const clause of clauses) {
+    const trimmed = clause.trim();
+    const m1 = trimmed.match(/(\d{2,7})\s*(?:\bto\b|\bko\b|\bfor\b|\bse\b)?\s*([a-z0-9\s]+)/i);
+    const m2 = trimmed.match(/([a-z0-9\s]+?)\s*(?:\bko\b|\bto\b|\bfor\b)?\s*(\d{2,7})/i);
+
+    if (m2 && !/^\d+$/.test(m2[1].trim())) {
+      const cleanName = m2[1].replace(/\b(?:settle|payback|pay\s*back|paid|de\s*diye|chuka\s*diye)\b/gi, '').trim();
+      if (cleanName && cleanName.length > 1 && !/^(?:rupee|rupees|rs|inr|me|mein|ko|to)$/i.test(cleanName)) {
+        settlements.push({ counterparty: cleanName, amount: parseInt(m2[2], 10) });
+        continue;
+      }
+    }
+
+    if (m1 && !/^\d+$/.test(m1[2].trim())) {
+      const cleanName = m1[2].replace(/\b(?:settle|payback|pay\s*back|paid|de\s*diye|chuka\s*diye)\b/gi, '').trim();
+      if (cleanName && cleanName.length > 1 && !/^(?:rupee|rupees|rs|inr|me|mein|ko|to)$/i.test(cleanName)) {
+        settlements.push({ counterparty: cleanName, amount: parseInt(m1[1], 10) });
+      }
+    }
+  }
+
+  return settlements.length > 1 ? settlements : null;
+}
+
 // Intelligent J.A.R.V.I.S. parser & command engine
 export function parseExpenseWithRules(
   prompt: string,
@@ -323,6 +416,47 @@ export function parseExpenseWithRules(
         },
       },
     };
+  }
+
+  // 0.25 Multi-Party Debt Settlements / Paybacks (e.g. "payback 5000 to kamran and also settle 2000 and 1000 for man 1 and 2 respectively")
+  const isMultiSettlementCandidate =
+    /pay\s*back|settle|settel|paid|chukta|chuka|de\s*diye|wapas\s*diye|lautaye/i.test(cleanPrompt) &&
+    (/respectively|respectivly/i.test(cleanPrompt) ||
+      (cleanPrompt.match(/\b(?:and also|and|aur|\,)\b/g) || []).length >= 1);
+
+  if (isMultiSettlementCandidate) {
+    const multiSettlements = extractMultiSettlements(prompt);
+    if (multiSettlements && multiSettlements.length > 1) {
+      const totalPay = multiSettlements.reduce((sum, s) => sum + s.amount, 0);
+      const autoActions: AutoAction[] = multiSettlements.map((s) => ({
+        type: 'settle_debt' as const,
+        settleCounterparty: s.counterparty,
+        debtAmount: s.amount,
+        isPartial: true,
+      }));
+
+      const summaryDetails = multiSettlements
+        .map((s) => `₹${s.amount.toLocaleString()} for ${s.counterparty}`)
+        .join(', ');
+
+      return {
+        merchant: 'Multiple Debt Settlements',
+        amount: totalPay,
+        category: 'Debt Repayment',
+        transactionType: 'expense',
+        isDiscretionary: false,
+        isOverLimit: false,
+        exceededBy: 0,
+        remainingSafeToSpend: Math.max(0, dailyLimit - spentToday),
+        sentiment: 'praise',
+        caCommentary: isEnglish
+          ? `Right away, Sir! Processed multiple debt settlements: deducted ${summaryDetails} respectively (Total: ₹${totalPay.toLocaleString()}). All individual balances have been updated and your daily spend allowance remains completely protected!`
+          : `Samajh gaya, Boss! Multiple debt settlements process kar diye hain: ${summaryDetails} respectively deduct kar diye gaye hain (Total: ₹${totalPay.toLocaleString()}). Ledger aur radar update ho chuka hai!`,
+        tomorrowAdjustedCap: dailyLimit,
+        autoAction: autoActions[0],
+        autoActions,
+      };
+    }
   }
 
   // 0.3 Partial Debt Repayment (e.g. "partially pay a debt of 20000 to 5000", "i paid 5000 of 20000 debt to rahul", "roommate ko 20000 me se 5000 de diye")
@@ -1735,7 +1869,8 @@ RULES FOR YOUR RESPONSE:
       caCommentary: finalCommentary,
       breachCode: parsed.breach_code,
       tomorrowAdjustedCap: parsed.tomorrow_adjusted_cap ?? Math.max(0, dailyLimit - (parsed.exceeded_by || 0)),
-      autoAction: parsed.auto_action,
+      autoAction: parsed.auto_action || (parsed.auto_actions && parsed.auto_actions[0]),
+      autoActions: parsed.auto_actions || (parsed.auto_action ? [parsed.auto_action] : undefined),
     };
   } catch (error) {
     console.warn('Gemini API call failed, using J.A.R.V.I.S. rule engine:', error);
