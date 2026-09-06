@@ -4,13 +4,32 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "J.A.R.V.I.S. | Autonomous Financial Terminal",
   description: "Personal AI Financial Butler — live budget telemetry, automated ledger, debts and savings horizons.",
+  manifest: "/manifest.json",
+  icons: {
+    icon: [
+      { url: "/icon.svg", type: "image/svg+xml" },
+      { url: "/icon-192.png", sizes: "192x192", type: "image/png" },
+      { url: "/icon-512.png", sizes: "512x512", type: "image/png" },
+    ],
+    apple: "/apple-touch-icon.png",
+  },
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "black-translucent",
+    title: "J.A.R.V.I.S.",
+  },
+  formatDetection: {
+    telephone: false,
+  },
 };
 
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   maximumScale: 1,
-  themeColor: "#f8f9ff",
+  userScalable: false,
+  viewportFit: "cover",
+  themeColor: "#070d1e",
 };
 
 export default function RootLayout({
