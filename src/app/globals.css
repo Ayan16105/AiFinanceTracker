@@ -1,0 +1,60 @@
+@import url('https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-hanken: 'Hanken Grotesk', sans-serif;
+  --font-jetbrains: 'JetBrains Mono', monospace;
+}
+
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+  html, body {
+    margin: 0;
+    padding: 0;
+    background-color: #f8f9ff;
+    color: #0b1c30;
+    font-family: var(--font-hanken);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overscroll-behavior-y: none;
+  }
+}
+
+/* Hide scrollbars for clean sleek minimalist FinTech look */
+::-webkit-scrollbar {
+  display: none;
+}
+* {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Monospace font utility for numbers and audit stamps */
+.font-mono-num {
+  font-family: var(--font-jetbrains), monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Glassmorphism & custom subtle glows */
+.card-diffused {
+  background: #ffffff;
+  box-shadow: 0 4px 20px rgba(15, 23, 42, 0.035), 0 1px 3px rgba(15, 23, 42, 0.02);
+  border: 1px solid rgba(226, 232, 240, 0.6);
+}
+
+.card-violation {
+  background: rgba(254, 242, 242, 0.6);
+  border: 1px solid rgba(248, 113, 113, 0.4);
+  box-shadow: 0 8px 30px rgba(239, 68, 68, 0.1);
+}
+
+.card-reconciled {
+  background: rgba(240, 253, 244, 0.6);
+  border: 1px solid rgba(74, 222, 128, 0.35);
+  box-shadow: 0 8px 30px rgba(16, 185, 129, 0.08);
+}
