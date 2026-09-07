@@ -1845,6 +1845,52 @@ export function parseExpenseWithRules(
     };
   }
 
+  // 5.5 Household Limit Inquiry & Overspending Check (e.g. "Did i exceed house hold limit", "Did i exceed household limit", "household limit exceed hua kya", "have i exceeded household limit")
+  const isHouseholdLimitInquiry =
+    (cleanPrompt.includes('household') || cleanPrompt.includes('house hold') || cleanPrompt.includes('ghar ka kharcha')) &&
+    (cleanPrompt.includes('exceed') || cleanPrompt.includes('cross') || cleanPrompt.includes('over') || cleanPrompt.includes('kitna') || cleanPrompt.includes('status') || cleanPrompt.includes('check') || cleanPrompt.includes('limit') || cleanPrompt.includes('bacha'));
+
+  if (isHouseholdLimitInquiry) {
+    const hhBudget = context?.householdSummary?.budget ?? context?.fixedBills ?? 10000;
+    const currentHhSpent = context?.householdSummary?.spent || 0;
+    const isExceeded = currentHhSpent > hhBudget;
+    const overspentBy = isExceeded ? currentHhSpent - hhBudget : 0;
+    const remainingInHh = Math.max(0, hhBudget - currentHhSpent);
+
+    return {
+      merchant: 'Household Audit',
+      amount: 0,
+      category: 'Household Mandatory',
+      transactionType: 'transfer',
+      isDiscretionary: false,
+      isOverLimit: isExceeded,
+      exceededBy: overspentBy,
+      remainingSafeToSpend: Math.max(0, dailyLimit - spentToday),
+      sentiment: isExceeded ? 'scold' : 'praise',
+      breachCode: isExceeded ? 'HOUSEHOLD-BREACH' : undefined,
+      caCommentary: isExceeded
+        ? (isEnglish
+            ? `🚨 YES, Sir! You have EXCEEDED your monthly household limit!\n\n` +
+              `• Allocated Household Budget: ₹${hhBudget.toLocaleString()}\n` +
+              `• Total Household Expended: ₹${currentHhSpent.toLocaleString()}\n` +
+              `• Deficit Overrun: ₹${overspentBy.toLocaleString()} OVER BUDGET!\n\n` +
+              `🛡️ STRICT REPRIMAND:\n` +
+              `Household overhead is strictly capped. Any further leakage directly erodes your liquidity, loan repayment schedule, and savings goals! Freeze all non-essential provisions immediately, Sir!`
+            : `🚨 HAAN Boss! Aapka monthly household limit EXCEED ho chuka hai!\n\n` +
+              `• Monthly Household Budget: ₹${hhBudget.toLocaleString()}\n` +
+              `• Total Household Kharcha: ₹${currentHhSpent.toLocaleString()}\n` +
+              `• Budget Se Zyada Kharch: ₹${overspentBy.toLocaleString()} (OVER LIMIT)!\n\n` +
+              `🛡️ STRICT REPRIMAND:\n` +
+              `Household aur grocery ke kharche strictly control mein rakhein warna savings aur loan repayments par direct asar padega. Faaltu kharche turant band karein!`)
+        : (isEnglish
+            ? `Checking the ledger now, Sir! 🎩📊\n\n` +
+              `No, you have NOT exceeded your household limit. Your household expenses currently stand at ₹${currentHhSpent.toLocaleString()} of your ₹${hhBudget.toLocaleString()} allocation (₹${remainingInHh.toLocaleString()} remaining in reserve). Your daily pocket allowance remains safe and untouched at ₹${Math.max(0, dailyLimit - spentToday).toFixed(0)}! 🛡️✨`
+            : `Checking the records now, Boss! 🎩📊\n\n` +
+              `Nahi, aapka household limit exceed nahi hua hai. Aapka household kharcha abhi ₹${currentHhSpent.toLocaleString()} / ₹${hhBudget.toLocaleString()} hai (₹${remainingInHh.toLocaleString()} bacha hua hai). Daily pocket allowance safe hai! 🛡️✨`),
+      tomorrowAdjustedCap: dailyLimit,
+    };
+  }
+
   // 6. Balance & Funds Inquiries (e.g. "mere pass balance kitna h", "ere pass balance kitna h", "kitna paisa bacha hai")
   if (
     cleanPrompt.includes('balance') ||
@@ -2096,6 +2142,7 @@ export function parseExpenseWithRules(
   else if (cleanPrompt.includes('coffee') || cleanPrompt.includes('starbucks')) merchant = 'Starbucks Coffee';
   else if (cleanPrompt.includes('tea') || cleanPrompt.includes('chai')) merchant = 'Chai Tapri';
   else if (cleanPrompt.includes('grocer') || cleanPrompt.includes('blinkit') || cleanPrompt.includes('zepto')) merchant = 'Blinkit Grocery';
+  else if (cleanPrompt.includes('household') || cleanPrompt.includes('house hold')) merchant = 'Household Expenses';
   else if (cleanPrompt.includes('mama')) merchant = "Mama's Wedding Dress Fund";
   else {
     const atMatch = prompt.match(/(?:at|from|pe)\s+([a-zA-Z0-9\s']+)/i);
@@ -2120,6 +2167,7 @@ export function parseExpenseWithRules(
     cleanPrompt.includes('rent') ||
     cleanPrompt.includes('kiraya') ||
     cleanPrompt.includes('household') ||
+    cleanPrompt.includes('house hold') ||
     cleanPrompt.includes('ghar') ||
     cleanPrompt.includes('electricity') ||
     cleanPrompt.includes('bijli') ||
@@ -2144,7 +2192,7 @@ export function parseExpenseWithRules(
     isDiscretionary = false;
   }
 
-  const hhBudget = context?.householdSummary?.budget || context?.fixedBills || 12000;
+  const hhBudget = context?.householdSummary?.budget ?? context?.fixedBills ?? 10000;
   const currentHhSpent = context?.householdSummary?.spent || 0;
   const projectedHhTotal = currentHhSpent + amount;
   const isHouseholdBreach = isHousehold && projectedHhTotal > hhBudget;
@@ -2251,8 +2299,12 @@ export async function parseExpenseWithGemini(
     (cleanPrompt.includes('daily') || cleanPrompt.includes('spent') || cleanPrompt.includes('spend')) &&
     (cleanPrompt.includes('party') || cleanPrompt.includes('event') || cleanPrompt.includes('pay') || cleanPrompt.includes('accordingly') || cleanPrompt.includes('farewell') || cleanPrompt.includes('plan'));
 
+  const isHouseholdLimitInquiry =
+    (cleanPrompt.includes('household') || cleanPrompt.includes('house hold') || cleanPrompt.includes('ghar ka kharcha')) &&
+    (cleanPrompt.includes('exceed') || cleanPrompt.includes('cross') || cleanPrompt.includes('over') || (cleanPrompt.includes('limit') && (cleanPrompt.includes('did') || cleanPrompt.includes('kya') || cleanPrompt.includes('check') || cleanPrompt.includes('status'))));
+
   // Immediate deterministic execution for safety-critical simulations and commands
-  if (isHypo || isDeletion || isAdjustUpcoming) {
+  if (isHypo || isDeletion || isAdjustUpcoming || isHouseholdLimitInquiry) {
     return parseExpenseWithRules(prompt, dailyLimit, spentToday, context, chatHistory);
   }
 
@@ -2278,6 +2330,10 @@ export async function parseExpenseWithGemini(
     const historySnippet = chatHistory && chatHistory.length > 0
       ? chatHistory.map((h) => `${h.sender === 'user' ? 'Sir' : 'J.A.R.V.I.S.'}: "${h.text}"`).join('\n')
       : 'No prior conversation in this session.';
+
+    const hhBudgetVal = context?.householdSummary?.budget ?? context?.fixedBills ?? 10000;
+    const hhSpentVal = context?.householdSummary?.spent || 0;
+    const hhRemainVal = Math.max(0, hhBudgetVal - hhSpentVal);
 
     const userContext = `
 CRITICAL LANGUAGE & SIMPLICITY DIRECTIVE:
@@ -2305,7 +2361,10 @@ Current Financial Diagnostics:
 - Current Liquid Total Balance: ₹${context?.currentBalance || 25000}
 - Spendable Cash Reserves: ₹${context?.availableLiquidCash || 25000}
 - Locked in Savings Goals: ₹${context?.totalSavedGoals || 0}
-- Fixed Bills: ₹${context?.fixedBills || 12000}
+- Fixed Bills: ₹${context?.fixedBills || 10000}
+- Monthly Household Overhead Budget Ceiling: ₹${hhBudgetVal}
+- Household Overhead Expended This Month: ₹${hhSpentVal}
+- Household Remaining Safe Ceiling: ₹${hhRemainVal}
 - Daily Spending Limit: ₹${dailyLimit}
 - Spent Today: ₹${spentToday}
 - Remaining Safe to Spend Today: ₹${Math.max(0, dailyLimit - spentToday)}
@@ -2332,6 +2391,17 @@ RULES FOR YOUR RESPONSE:
    - Always amount: 0! Calculate slashed upcoming daily allowance and set tomorrow_adjusted_cap to the reduced limit. Provide strict warning on savings and debt repayments.
 8. OVERSPEND ENFORCEMENT & DEFICIT AMORTIZATION:
    - When over limit, amortize deficit across remaining days. Set tomorrow_adjusted_cap to reduced limit, emit auto_action: { "type": "update_budget", "budgetUpdate": { "dailyLimit": tomorrow_adjusted_cap } }, and give STRICT WARNING that savings goals and debt repayments are at risk!
+9. HOUSEHOLD EXPENSES & STRICT CEILING ENFORCEMENT (CRITICAL):
+   - For household, grocery, rent, utilities, rashan: set is_discretionary: false.
+   - If (spent + amount) > budget:
+     * MUST set is_over_limit: true!
+     * MUST set breach_code: "HOUSEHOLD-BREACH"!
+     * MUST set sentiment: "scold"!
+     * MUST set exceeded_by: (spent + amount) - budget!
+     * MUST issue a STRICT REPRIMAND warning Sir of the household budget overrun!
+   - If asking "Did I exceed household limit":
+     * If spent > budget: state YES, exceeded by (spent - budget)! Set sentiment: "scold", is_over_limit: true.
+     * If spent <= budget: state NO, report spent and remaining safe household ceiling.
 `;
 
     let result;
@@ -2389,19 +2459,75 @@ RULES FOR YOUR RESPONSE:
         .replace(/\bsanctuary reserves\b/gi, 'savings');
     }
 
+    const parsedAmount = typeof parsed.amount === 'number' ? parsed.amount : parseFloat(parsed.amount) || 0;
+    const isHouseholdExpense =
+      cleanPrompt.includes('household') ||
+      cleanPrompt.includes('house hold') ||
+      cleanPrompt.includes('grocer') ||
+      cleanPrompt.includes('blinkit') ||
+      cleanPrompt.includes('zepto') ||
+      cleanPrompt.includes('instamart') ||
+      cleanPrompt.includes('rashan') ||
+      cleanPrompt.includes('ration') ||
+      cleanPrompt.includes('rent') ||
+      cleanPrompt.includes('kiraya') ||
+      cleanPrompt.includes('bill') ||
+      cleanPrompt.includes('utility') ||
+      cleanPrompt.includes('utilities') ||
+      cleanPrompt.includes('doodh') ||
+      cleanPrompt.includes('milk') ||
+      cleanPrompt.includes('sabzi') ||
+      cleanPrompt.includes('vegetable') ||
+      (parsed.category && (
+        parsed.category.toLowerCase().includes('household') ||
+        parsed.category.toLowerCase().includes('mandatory') ||
+        parsed.category.toLowerCase().includes('utilities') ||
+        parsed.category.toLowerCase().includes('bills')
+      ));
+
+    let isOverLimit = Boolean(parsed.is_over_limit);
+    let exceededBy = parsed.exceeded_by || 0;
+    let sentiment: 'praise' | 'scold' = parsed.sentiment === 'scold' ? 'scold' : 'praise';
+    let breachCode = parsed.breach_code;
+    let isDiscretionary = parsed.is_discretionary ?? true;
+
+    if (isHouseholdExpense) {
+      isDiscretionary = false;
+      const hhBudget = context?.householdSummary?.budget ?? context?.fixedBills ?? 10000;
+      const currentHhSpent = context?.householdSummary?.spent || 0;
+      const projectedHhTotal = currentHhSpent + parsedAmount;
+
+      if (projectedHhTotal > hhBudget) {
+        isOverLimit = true;
+        exceededBy = projectedHhTotal - hhBudget;
+        sentiment = 'scold';
+        breachCode = 'HOUSEHOLD-BREACH';
+
+        finalCommentary = isEnglish
+          ? `🚨 STRICT HOUSEHOLD PROTOCOL BREACH, Sir!\n\n` +
+            `You have logged ₹${parsedAmount.toLocaleString()} for ${parsed.category || 'Household Mandatory'} (${parsed.merchant || 'Household Expenses'}). This surges your monthly household spend to ₹${projectedHhTotal.toLocaleString()}, which violently EXCEEDS your strict monthly household ceiling of ₹${hhBudget.toLocaleString()} by ₹${exceededBy.toLocaleString()}!\n\n` +
+            `🛡️ MANDATORY RESTRAINT DIRECTIVE:\n` +
+            `Household overhead is strictly capped. Any further leakage here directly threatens your savings goals and debt repayment milestones! Freeze non-essential provisions immediately, Sir!`
+          : `🚨 STRICT HOUSEHOLD PROTOCOL BREACH, Boss!\n\n` +
+            `Aapne ${parsed.category || 'Household Mandatory'} (${parsed.merchant || 'Household Expenses'}) par ₹${parsedAmount.toLocaleString()} kharch kiya hai. Isse aapka is mahine ka total household kharcha ₹${projectedHhTotal.toLocaleString()} ho gaya hai, jo aapke strict monthly household budget (₹${hhBudget.toLocaleString()}) se ₹${exceededBy.toLocaleString()} ZYADA hai!\n\n` +
+            `🛡️ STRICT WARNING:\n` +
+            `Household aur ration ke kharche strictly control mein hone chahiye! Faaltu kharche turant rokein, warna loan repayments aur savings goals khatre mein aa jayenge!`;
+      }
+    }
+
     return {
-      merchant: parsed.merchant || 'General Expense',
-      amount: typeof parsed.amount === 'number' ? parsed.amount : parseFloat(parsed.amount) || 0,
-      category: parsed.category || 'Pocket Money',
+      merchant: (isHouseholdExpense && (!parsed.merchant || parsed.merchant === 'General Expense')) ? 'Household Expenses' : (parsed.merchant || 'General Expense'),
+      amount: parsedAmount,
+      category: isHouseholdExpense ? 'Household Mandatory' : (parsed.category || 'Pocket Money'),
       transactionType: (parsed.transaction_type as any) || 'expense',
-      isDiscretionary: parsed.is_discretionary ?? (parsed.amount > 0),
-      isOverLimit: Boolean(parsed.is_over_limit),
-      exceededBy: parsed.exceeded_by || 0,
-      remainingSafeToSpend: parsed.remaining_safe_to_spend ?? Math.max(0, dailyLimit - (spentToday + (parsed.amount || 0))),
-      sentiment: parsed.sentiment === 'scold' ? 'scold' : 'praise',
+      isDiscretionary,
+      isOverLimit,
+      exceededBy,
+      remainingSafeToSpend: parsed.remaining_safe_to_spend ?? Math.max(0, dailyLimit - (spentToday + (isDiscretionary ? parsedAmount : 0))),
+      sentiment,
       caCommentary: finalCommentary,
-      breachCode: parsed.breach_code,
-      tomorrowAdjustedCap: parsed.tomorrow_adjusted_cap ?? Math.max(0, dailyLimit - (parsed.exceeded_by || 0)),
+      breachCode,
+      tomorrowAdjustedCap: parsed.tomorrow_adjusted_cap ?? Math.max(0, dailyLimit - (isDiscretionary ? exceededBy : 0)),
       autoAction: parsed.auto_action || (parsed.auto_actions && parsed.auto_actions[0]),
       autoActions: parsed.auto_actions || (parsed.auto_action ? [parsed.auto_action] : undefined),
     };

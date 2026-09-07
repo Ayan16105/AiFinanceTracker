@@ -1203,7 +1203,7 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
       })
       .reduce((sum, t) => sum + t.amount, 0);
 
-    const hhBudget = userSettings.householdFundTarget || 12000;
+    const hhBudget = userSettings.householdFundTarget ?? 10000;
     const hhRemaining = Math.max(0, hhBudget - hhSpentThisMonth);
 
     const financialContext = {
@@ -1294,6 +1294,49 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
       result.category = 'Savings & Goals';
       result.isDiscretionary = false;
       result.amount = Math.abs(result.amount);
+    }
+
+    // Enforce Household Budget Overspend Guardrail Deterministically
+    const isHhPrompt =
+      cleanLowerPrompt.includes('household') ||
+      cleanLowerPrompt.includes('house hold') ||
+      cleanLowerPrompt.includes('grocer') ||
+      cleanLowerPrompt.includes('blinkit') ||
+      cleanLowerPrompt.includes('zepto') ||
+      cleanLowerPrompt.includes('instamart') ||
+      cleanLowerPrompt.includes('rashan') ||
+      cleanLowerPrompt.includes('ration') ||
+      cleanLowerPrompt.includes('rent') ||
+      cleanLowerPrompt.includes('kiraya') ||
+      cleanLowerPrompt.includes('bill') ||
+      cleanLowerPrompt.includes('utility') ||
+      cleanLowerPrompt.includes('utilities') ||
+      cleanLowerPrompt.includes('doodh') ||
+      cleanLowerPrompt.includes('milk') ||
+      cleanLowerPrompt.includes('sabzi') ||
+      cleanLowerPrompt.includes('vegetable') ||
+      (result.category && (
+        result.category.toLowerCase().includes('household') ||
+        result.category.toLowerCase().includes('mandatory') ||
+        result.category.toLowerCase().includes('utilities') ||
+        result.category.toLowerCase().includes('bills')
+      ));
+
+    if (isHhPrompt && result.amount > 0) {
+      result.isDiscretionary = false;
+      const hhBudget = financialContext.householdSummary.budget;
+      const currentHhSpent = financialContext.householdSummary.spent;
+      const projectedHhTotal = currentHhSpent + result.amount;
+
+      if (projectedHhTotal > hhBudget) {
+        result.isOverLimit = true;
+        result.exceededBy = projectedHhTotal - hhBudget;
+        result.sentiment = 'scold';
+        result.breachCode = 'HOUSEHOLD-BREACH';
+        if (!result.caCommentary.includes('PROTOCOL BREACH') && !result.caCommentary.includes('EXCEEDS')) {
+          result.caCommentary = `🚨 STRICT HOUSEHOLD PROTOCOL BREACH, Sir!\n\nYou have logged ₹${result.amount.toLocaleString()} for ${result.category} (${result.merchant}). This surges your monthly household spend to ₹${projectedHhTotal.toLocaleString()}, which violently EXCEEDS your strict monthly household ceiling of ₹${hhBudget.toLocaleString()} by ₹${result.exceededBy.toLocaleString()}!\n\n🛡️ MANDATORY RESTRAINT DIRECTIVE:\nHousehold overhead is non-negotiable and strictly capped. Any further leakage here directly threatens your savings goals and debt clearance milestones! Freeze non-essential provisions immediately, Sir!`;
+        }
+      }
     }
 
     const isHypotheticalPrompt =
