@@ -100,25 +100,40 @@ GOALS & SAVINGS INQUIRIES & ALLOCATIONS:
      - Directly list all active goals from context.goals (Name, Saved so far, Target amount, and Progress %).
 2. ALLOCATE / DEPOSIT INTO GOAL (CRITICAL):
    - e.g. "mama's wedding dress me salary se 2000 aur daal do saving ke", "iPhone goal me 5000 deposit karo":
-   - THIS IS A TRANSFER TO A SAVINGS GOAL! NOT A DAILY DISCRETIONARY EXPENSE PENALTY!
-   - Set amount: EXACT AMOUNT (e.g. 2000), transaction_type: "transfer", category: "Savings & Goals", merchant: "Goal Name", is_discretionary: false, is_over_limit: false.
-   - Emit auto_action: { "type": "allocate_goal", "goalAllocation": { "goalName": string, "amount": number } }.
-   - Respond warmly: "Right away, Sir! ₹2,000 salary se direct Mama's Wedding Dress goal me allocate kar diye hain. Yeh aapke daily pocket allowance ko deduct nahi karega, balki aapka goal balance boost ho gaya hai!"
+   - STRICT CONSTRAINT - NO UNBACKED ALLOCATIONS:
+     * Compare requested amount against context.currentBalance (or context.availableLiquidCash).
+     * If requested amount > context.currentBalance:
+       - DO NOT LOG ANY ALLOCATION! DO NOT EMIT auto_action allocate_goal!
+       - Set amount: 0, transaction_type: "transfer", is_discretionary: false, sentiment: "scold".
+       - Warn Sir: "Insolvency Warning, Sir! 🛡️✋ Your Current Liquid Balance is only ₹[currentBalance]. You cannot deposit ₹[amount] into '[goalName]' without plunging your checking account into an illegal negative deficit! Please deposit liquid funds first."
+     * If requested amount <= context.currentBalance:
+       - THIS IS A TRANSFER TO A SAVINGS GOAL! NOT A DAILY DISCRETIONARY EXPENSE PENALTY!
+       - Set amount: EXACT AMOUNT (e.g. 2000), transaction_type: "transfer", category: "Savings & Goals", merchant: "Goal Name", is_discretionary: false, is_over_limit: false.
+       - Emit auto_action: { "type": "allocate_goal", "goalAllocation": { "goalName": string, "amount": number } }.
+       - Respond warmly: "Right away, Sir! ₹2,000 salary se direct Mama's Wedding Dress goal me allocate kar diye hain. Yeh aapke daily pocket allowance ko deduct nahi karega, balki aapka goal balance boost ho gaya hai!"
 3. WITHDRAW / RETRIEVE FROM GOAL TO ACCOUNT (CRITICAL):
    - e.g. "acha ek kam karo emrgency fund me se 1000 mere account me transfer krr do", "emergency fund se 1000 nikaal lo", "withdraw 1000 from emergency buffer", "savings goal se 1000 account me bhej do":
-   - THIS IS A WITHDRAWAL FROM A SAVINGS GOAL BACK INTO CHECKING ACCOUNT!
-   - THIS IS INCOMING MONEY / CREDIT TO CHECKING ACCOUNT (POSITIVE LIQUID CASH)!
-   - Set:
-       amount: EXACT AMOUNT (e.g. 1000) (POSITIVE integer, NEVER negative!),
-       transaction_type: "income",
-       category: "Savings & Goals",
-       merchant: "Emergency Buffer (3-Month Run)" (or matched goal name),
-       is_discretionary: false,
-       is_over_limit: false.
-   - Emit auto_action: { "type": "withdraw_goal", "goalWithdrawal": { "goalName": string, "amount": number } }.
-   - Respond:
-     * English: "Right away, Sir. Retrieved ₹1,000 from your Emergency Buffer vault directly back into your checking account balance (+₹1,000). Goal reserves have adjusted accordingly, and your daily pocket allowance remains completely safe."
-     * Hinglish: "Checking the Vault, Boss! Maine Emergency Buffer se ₹1,000 nikaal kar aapke checking account mein transfer kar diye hain (+₹1,000). Goal vault balance kam ho gaya hai par aapke daily pocket money par koi aanch nahi aayi hai!"
+   - STRICT CONSTRAINT - NO OVER-WITHDRAWALS (PREVENT CREATING UNBACKED CASH):
+     * Check context.goals for the matching goal and its currentAmount!
+     * If target goal does not exist, or if goal's currentAmount is 0, or if requested withdrawal > goal.currentAmount:
+       - DO NOT LOG ANY WITHDRAWAL! DO NOT EMIT auto_action withdraw_goal! DO NOT CREDIT CHECKING ACCOUNT!
+       - Set amount: 0, transaction_type: "transfer", is_discretionary: false, is_over_limit: false, sentiment: "scold".
+       - Halt and rebuff clearly:
+         "Protocol Abort, Sir! 🛡️✋ You only have ₹[goal.currentAmount] saved in your '[goal.name]' vault. You cannot withdraw ₹[requestedAmount] from a reserve that lacks those funds! (Maximum available: ₹[goal.currentAmount]). Transaction halted — zero funds have been transferred."
+     * If requested withdrawal <= goal.currentAmount:
+       - THIS IS A WITHDRAWAL FROM A SAVINGS GOAL BACK INTO CHECKING ACCOUNT!
+       - THIS IS INCOMING MONEY / CREDIT TO CHECKING ACCOUNT (POSITIVE LIQUID CASH)!
+       - Set:
+           amount: EXACT AMOUNT (e.g. 1000) (POSITIVE integer, NEVER negative!),
+           transaction_type: "income",
+           category: "Savings & Goals",
+           merchant: "Emergency Buffer (3-Month Run)" (or matched goal name),
+           is_discretionary: false,
+           is_over_limit: false.
+       - Emit auto_action: { "type": "withdraw_goal", "goalWithdrawal": { "goalName": string, "amount": number } }.
+       - Respond:
+         * English: "Right away, Sir. Retrieved ₹1,000 from your Emergency Buffer vault directly back into your checking account balance (+₹1,000). Goal reserves have adjusted accordingly, and your daily pocket allowance remains completely safe."
+         * Hinglish: "Checking the Vault, Boss! Maine Emergency Buffer se ₹1,000 nikaal kar aapke checking account mein transfer kar diye hain (+₹1,000). Goal vault balance kam ho gaya hai par aapke daily pocket money par koi aanch nahi aayi hai!"
 4. CREATE NEW GOAL:
    - If Sir commands to add a goal (e.g. "add goal iPhone 80000"):
      - Emit auto_action: { "type": "create_goal", "goalData": { "name": string, "targetAmount": number, "monthlyAllocation": number } }.
@@ -487,6 +502,47 @@ export function parseExpenseWithRules(
   const currentFixed = context?.fixedBills || 12000;
   const totalTxCount = context?.transactionsCount ?? 0;
   const isEnglish = isEnglishPrompt(prompt);
+
+  // 0.0 Negative Amount Strict Intercept
+  if (cleanPrompt.includes('-') && /(?:^|\s)-\s*(?:₹|rs\.?|inr)?\s*\d+/i.test(cleanPrompt)) {
+    return {
+      merchant: 'Security Intercept',
+      amount: 0,
+      category: 'Financial Advisory',
+      transactionType: 'transfer',
+      isDiscretionary: false,
+      isOverLimit: false,
+      exceededBy: 0,
+      remainingSafeToSpend: Math.max(0, dailyLimit - spentToday),
+      sentiment: 'scold',
+      caCommentary: isEnglish
+        ? `Invalid Transaction, Sir! 🛡️✋ Negative expenditure amounts are mathematically prohibited in your ledger. Please log a positive monetary figure.`
+        : `Invalid Transaction, Boss! 🛡️✋ Negative kharche ledger mein allow nahi hain. Kripya ek positive amount enter karein.`,
+      tomorrowAdjustedCap: dailyLimit,
+    };
+  }
+
+  // 0.05 Fat-Finger Typo Intercept (> ₹1,00,000 for standard expenses without confirmation)
+  const isConfirmed = /\b(?:confirm|confirmed|haan?|yes|sahi hai)\b/i.test(cleanPrompt);
+  const fatFingerMatch = cleanPrompt.match(/(?:₹|rs\.?|inr)?\s*(\d{6,})/i);
+  if (fatFingerMatch && !isConfirmed && !cleanPrompt.includes('rent') && !cleanPrompt.includes('kiraya') && !cleanPrompt.includes('salary')) {
+    const rawVal = parseInt(fatFingerMatch[1], 10);
+    return {
+      merchant: 'Security Intercept',
+      amount: 0,
+      category: 'Financial Advisory',
+      transactionType: 'transfer',
+      isDiscretionary: false,
+      isOverLimit: false,
+      exceededBy: 0,
+      remainingSafeToSpend: Math.max(0, dailyLimit - spentToday),
+      sentiment: 'scold',
+      caCommentary: isEnglish
+        ? `Security Intercept, Sir! 🛡️✋ An expenditure of ₹${rawVal.toLocaleString()} appears to be an unintended typographical anomaly. To safeguard your ledger against accidental entries, this transaction has NOT been recorded. If genuinely intended, please reply: "Confirm ₹${rawVal.toLocaleString()}".`
+        : `Security Intercept, Boss! 🛡️✋ ₹${rawVal.toLocaleString()} ka kharcha typing mistake lag rahi hai. Ledger ko safe rakhne ke liye yeh record nahi kiya gaya hai. Agar aapne sach mein itna kharch kiya hai, toh "Confirm ₹${rawVal.toLocaleString()}" likh kar confirm karein.`,
+      tomorrowAdjustedCap: dailyLimit,
+    };
+  }
 
   // 0.1 Conversational Record Correction: Flip Debt Direction
   const isDebtFlipCorrection =
@@ -1265,7 +1321,12 @@ export function parseExpenseWithRules(
 
   // 1.254 Savings Goal Deadline Acceleration & Urgency (e.g. "JARVIS, how to reach Mama's wedding dress goal faster", "accelerate savings goals")
   const isGoalAcceleration =
-    (cleanPrompt.includes('faster') || cleanPrompt.includes('accelerat') || cleanPrompt.includes('speed up') || (cleanPrompt.includes('reach') && cleanPrompt.includes('goal')) || cleanPrompt.includes('wedding dress')) &&
+    !cleanPrompt.includes('withdraw') &&
+    !cleanPrompt.includes('nikaal') &&
+    !cleanPrompt.includes('nikal') &&
+    !cleanPrompt.includes('deposit') &&
+    !cleanPrompt.includes('daal') &&
+    (cleanPrompt.includes('faster') || cleanPrompt.includes('accelerat') || cleanPrompt.includes('speed up') || (cleanPrompt.includes('reach') && cleanPrompt.includes('goal')) || (cleanPrompt.includes('wedding dress') && (cleanPrompt.includes('plan') || cleanPrompt.includes('how') || cleanPrompt.includes('kaise') || cleanPrompt.includes('faster')))) &&
     (cleanPrompt.includes('goal') || cleanPrompt.includes('dress') || cleanPrompt.includes('saving') || cleanPrompt.includes('mama') || cleanPrompt.includes('target'));
 
   if (isGoalAcceleration) {
@@ -1493,7 +1554,7 @@ export function parseExpenseWithRules(
 
   // 1.26 Goal Withdrawal / Retrieve from Goal to Account (e.g. "acha ek kam karo emrgency fund me se 1000 mere account me transfer krr do", "withdraw 1000 from emergency buffer", "savings se 1000 nikaal lo")
   const isGoalWithdrawal =
-    (cleanPrompt.includes('fund') || cleanPrompt.includes('goal') || cleanPrompt.includes('saving') || cleanPrompt.includes('buffer') || cleanPrompt.includes('emergency') || cleanPrompt.includes('mama') || cleanPrompt.includes('dress')) &&
+    (cleanPrompt.includes('fund') || cleanPrompt.includes('goal') || cleanPrompt.includes('saving') || cleanPrompt.includes('buffer') || cleanPrompt.includes('emergency') || cleanPrompt.includes('mama') || cleanPrompt.includes('dress') || cleanPrompt.includes('vault') || (context?.goals && context.goals.some((g) => cleanPrompt.includes(g.name.toLowerCase())))) &&
     (
       cleanPrompt.includes('nikaal') ||
       cleanPrompt.includes('nikal') ||
@@ -1517,9 +1578,10 @@ export function parseExpenseWithRules(
     // Find matching goal from context
     const matchedGoal = context?.goals?.find((g) => {
       const gName = g.name.toLowerCase();
+      if (cleanPrompt.includes(gName)) return true;
       if (cleanPrompt.includes('emergency') || cleanPrompt.includes('buffer')) return gName.includes('emergency') || gName.includes('buffer');
       if (cleanPrompt.includes('mama') || cleanPrompt.includes('dress') || cleanPrompt.includes('wedding')) return gName.includes('mama') || gName.includes('dress');
-      return cleanPrompt.includes(gName);
+      return gName.split(' ').some((w) => w.length > 3 && cleanPrompt.includes(w));
     });
 
     const goalName = matchedGoal
@@ -1532,7 +1594,7 @@ export function parseExpenseWithRules(
 
     const remainingInGoal = matchedGoal ? Math.max(0, matchedGoal.currentAmount - withdrawAmount) : 2000;
 
-    // Edge Case: Goal Over-withdrawal Guard
+    // Edge Case: Goal Over-withdrawal Strict Guard
     if (matchedGoal) {
       if (matchedGoal.currentAmount <= 0) {
         return {
@@ -1544,37 +1606,29 @@ export function parseExpenseWithRules(
           isOverLimit: false,
           exceededBy: 0,
           remainingSafeToSpend: Math.max(0, dailyLimit - spentToday),
-          sentiment: 'praise',
+          sentiment: 'scold',
           caCommentary: isEnglish
-            ? `Sir, your '${goalName}' vault currently has a ₹0 balance. No funds could be retrieved.`
-            : `Boss, aapke '${goalName}' vault mein abhi ₹0 balance hai. Koi paisa withdraw nahi kiya ja sakta.`,
+            ? `Protocol Abort, Sir! 🛡️✋ Your '${goalName}' vault currently has a balance of ₹0. You cannot withdraw funds from an empty reserve! Transaction halted.`
+            : `Protocol Abort, Boss! 🛡️✋ Aapke '${goalName}' vault mein abhi ₹0 balance hai. Khali vault se koi paisa withdraw nahi kiya ja sakta! Transaction halted.`,
           tomorrowAdjustedCap: dailyLimit,
         };
       }
 
       if (withdrawAmount > matchedGoal.currentAmount) {
-        const actualWithdraw = matchedGoal.currentAmount;
         return {
           merchant: goalName,
-          amount: actualWithdraw,
+          amount: 0,
           category: 'Savings & Goals',
-          transactionType: 'income',
+          transactionType: 'transfer',
           isDiscretionary: false,
           isOverLimit: false,
           exceededBy: 0,
           remainingSafeToSpend: Math.max(0, dailyLimit - spentToday),
-          sentiment: 'praise',
+          sentiment: 'scold',
           caCommentary: isEnglish
-            ? `Sir, your '${goalName}' vault only contains ₹${actualWithdraw.toLocaleString()}. You cannot withdraw ₹${withdrawAmount.toLocaleString()}. I have retrieved the entire available balance of ₹${actualWithdraw.toLocaleString()} into your checking account (+₹${actualWithdraw.toLocaleString()}). Vault balance now stands at ₹0.`
-            : `Boss, aapke '${goalName}' vault mein sirf ₹${actualWithdraw.toLocaleString()} bache the. Aap ₹${withdrawAmount.toLocaleString()} withdraw nahi kar sakte. Maine poore ₹${actualWithdraw.toLocaleString()} aapke account mein transfer kar diye hain (+₹${actualWithdraw.toLocaleString()}). Ab vault balance ₹0 hai.`,
+            ? `Protocol Abort, Sir! 🛡️✋ You only have ₹${matchedGoal.currentAmount.toLocaleString()} saved in your '${goalName}' vault. You cannot withdraw ₹${withdrawAmount.toLocaleString()} from a reserve that lacks those funds! (Maximum available: ₹${matchedGoal.currentAmount.toLocaleString()}). Transaction halted — zero funds have been transferred.`
+            : `Protocol Abort, Boss! 🛡️✋ Aapke '${goalName}' vault mein sirf ₹${matchedGoal.currentAmount.toLocaleString()} bache hain. Aap isme se ₹${withdrawAmount.toLocaleString()} withdraw nahi kar sakte! (Available: ₹${matchedGoal.currentAmount.toLocaleString()}). Transaction rok diya gaya hai — koi paisa transfer nahi hua.`,
           tomorrowAdjustedCap: dailyLimit,
-          autoAction: {
-            type: 'withdraw_goal',
-            goalWithdrawal: {
-              goalName,
-              amount: actualWithdraw,
-            },
-          },
         };
       }
     }
@@ -1610,6 +1664,7 @@ export function parseExpenseWithRules(
   ) {
     const amountMatch = prompt.match(/(\d{3,6})/);
     const allocAmount = amountMatch ? parseInt(amountMatch[1], 10) : 3000;
+    const currentBal = context?.currentBalance ?? 25000;
 
     let goalName = '';
     if (context?.goals && context.goals.length > 0) {
@@ -1626,6 +1681,24 @@ export function parseExpenseWithRules(
         const afterIn = prompt.match(/(?:in|to|for|me|mein)\s+([a-zA-Z0-9\s']+?)(?:\s+goal|\s+saving|\s+fund|$)/i);
         goalName = afterIn ? afterIn[1].trim() : 'Savings Goal';
       }
+    }
+
+    if (allocAmount > currentBal) {
+      return {
+        merchant: goalName,
+        amount: 0,
+        category: 'Savings & Goals',
+        transactionType: 'transfer',
+        isDiscretionary: false,
+        isOverLimit: false,
+        exceededBy: 0,
+        remainingSafeToSpend: Math.max(0, dailyLimit - spentToday),
+        sentiment: 'scold',
+        caCommentary: isEnglish
+          ? `Insolvency Warning, Sir! 🛡️✋ Your Current Liquid Balance is only ₹${currentBal.toLocaleString()}. You cannot allocate ₹${allocAmount.toLocaleString()} into '${goalName}' without plunging your checking account into an illegal negative deficit! Allocation cancelled.`
+          : `Insolvency Warning, Boss! 🛡️✋ Aapka Current Liquid Balance sirf ₹${currentBal.toLocaleString()} hai. Aap ₹${allocAmount.toLocaleString()} '${goalName}' mein deposit nahi kar sakte warna aapka checking account negative deficit mein chala jayega! Allocation cancel kar diya gaya hai.`,
+        tomorrowAdjustedCap: dailyLimit,
+      };
     }
 
     return {

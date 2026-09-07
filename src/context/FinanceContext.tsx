@@ -593,8 +593,12 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
     if (amount <= 0) return;
     const goal = goals.find((g) => g.id === goalId);
     if (!goal || goal.currentAmount <= 0) return;
+    if (amount > goal.currentAmount) {
+      console.warn(`[J.A.R.V.I.S. Guard] Cannot withdraw ₹${amount} from '${goal.name}' (Available balance: ₹${goal.currentAmount})`);
+      return;
+    }
 
-    const withdrawAmount = Math.min(amount, goal.currentAmount);
+    const withdrawAmount = amount;
     let updatedGoal: SavingsGoal | null = null;
 
     setGoals((prev) =>
@@ -1380,6 +1384,95 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
         return s;
       })
     );
+
+    // =========================================================================
+    // STRICT FINANCIAL INTEGRITY & EDGE CASE PRE-VALIDATION PIPELINE
+    // =========================================================================
+
+    // 1. Fat-Finger Typographical Anomaly Intercept (> ₹1,00,000 for standard expense without confirmation)
+    const isConfirmationPrompt =
+      cleanLowerPrompt.includes('confirm') ||
+      cleanLowerPrompt.includes('confirm ') ||
+      cleanLowerPrompt === 'yes' ||
+      cleanLowerPrompt === 'ha' ||
+      cleanLowerPrompt === 'haa' ||
+      cleanLowerPrompt.startsWith('yes ') ||
+      cleanLowerPrompt.startsWith('ha ');
+
+    if (
+      result.amount >= 100000 &&
+      result.transactionType === 'expense' &&
+      !isConfirmationPrompt &&
+      result.category !== 'Household Mandatory' &&
+      !cleanLowerPrompt.includes('rent') &&
+      !cleanLowerPrompt.includes('kiraya')
+    ) {
+      const suspiciousAmt = result.amount;
+      result.amount = 0;
+      result.sentiment = 'scold';
+      result.isOverLimit = false;
+      result.caCommentary = `Security Intercept, Sir! 🛡️✋ An expenditure of ₹${suspiciousAmt.toLocaleString()} for ${result.merchant} (${result.category}) appears to be an unintended typographical anomaly. To safeguard your ledger against accidental entries, this transaction has NOT been recorded. If genuinely intended, please reply: "Confirm ₹${suspiciousAmt.toLocaleString()} for ${result.merchant}".`;
+      result.autoActions = [];
+      result.autoAction = undefined;
+    }
+
+    // 2. Goal Over-Withdrawal Intercept (Prevent withdrawing more than exists in vault or fake money credit)
+    const withdrawAct = (result.autoActions || (result.autoAction ? [result.autoAction] : [])).find((a) => a.type === 'withdraw_goal');
+    const isWithdrawAttempt =
+      withdrawAct !== undefined ||
+      cleanLowerPrompt.includes('withdraw') ||
+      cleanLowerPrompt.includes('nikaal') ||
+      cleanLowerPrompt.includes('nikal');
+
+    if (isWithdrawAttempt) {
+      const targetName = (withdrawAct?.goalWithdrawal?.goalName || result.merchant || '').toLowerCase();
+      const targetGoal = goals.find((g) => isGoalMatch(g.name, targetName));
+      const reqWithdrawAmount = Math.abs(withdrawAct?.goalWithdrawal?.amount || result.amount || 0);
+
+      if (withdrawAct || (targetGoal && reqWithdrawAmount > 0)) {
+        if (!targetGoal) {
+          result.amount = 0;
+          result.sentiment = 'scold';
+          result.isOverLimit = false;
+          result.caCommentary = `Goal Not Found, Sir! 🛡️✋ I could not locate an active savings vault matching '${targetName || 'the requested goal'}'. Active vaults: ${goals.map((g) => g.name).join(', ') || 'None'}.`;
+          result.autoActions = [];
+          result.autoAction = undefined;
+        } else if (targetGoal.currentAmount <= 0) {
+          result.amount = 0;
+          result.sentiment = 'scold';
+          result.isOverLimit = false;
+          result.caCommentary = `Protocol Abort, Sir! 🛡️✋ Your '${targetGoal.name}' vault currently has a balance of ₹0. You cannot withdraw funds from an empty reserve! Transaction halted.`;
+          result.autoActions = [];
+          result.autoAction = undefined;
+        } else if (reqWithdrawAmount > targetGoal.currentAmount) {
+          result.amount = 0;
+          result.sentiment = 'scold';
+          result.isOverLimit = false;
+          result.caCommentary = `Protocol Abort, Sir! 🛡️✋ You only have ₹${targetGoal.currentAmount.toLocaleString()} saved in your '${targetGoal.name}' vault. You cannot withdraw ₹${reqWithdrawAmount.toLocaleString()} from a reserve that lacks those funds! (Maximum available: ₹${targetGoal.currentAmount.toLocaleString()}). No funds have been deducted or credited.`;
+          result.autoActions = [];
+          result.autoAction = undefined;
+        }
+      }
+    }
+
+    // 3. Goal Over-Allocation Intercept (Prevent depositing more into goals than available liquid checking cash)
+    const allocAct = (result.autoActions || (result.autoAction ? [result.autoAction] : [])).find((a) => a.type === 'allocate_goal');
+    if (allocAct) {
+      const reqAllocAmount = Math.abs(allocAct.goalAllocation?.amount || result.amount || 0);
+      if (reqAllocAmount > currentBalance) {
+        result.amount = 0;
+        result.sentiment = 'scold';
+        result.isOverLimit = false;
+        result.caCommentary = `Insolvency Warning, Sir! 🛡️✋ Your Current Liquid Balance is only ₹${currentBalance.toLocaleString()}. You cannot allocate ₹${reqAllocAmount.toLocaleString()} into '${allocAct.goalAllocation?.goalName || result.merchant}' without plunging your checking account into an illegal negative deficit! Allocation cancelled.`;
+        result.autoActions = [];
+        result.autoAction = undefined;
+      }
+    }
+
+    // 4. Negative Amount Normalization
+    if (result.amount < 0) {
+      result.amount = Math.abs(result.amount);
+    }
 
     // 3. Execute J.A.R.V.I.S. Actions (Full App Navigation & Control)
     const actionsToExecute: AutoAction[] = (result.autoActions && result.autoActions.length > 0)
