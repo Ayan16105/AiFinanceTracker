@@ -12,11 +12,16 @@ import TransactionsView from '@/components/transactions/TransactionsView';
 import AuthScreen from '@/components/auth/AuthScreen';
 import SalarySettingsModal from '@/components/modals/SalarySettingsModal';
 
+import JarvisNotificationBanner from '@/components/notifications/JarvisNotificationBanner';
+
 function MainAppLayout({ onLogout }: { onLogout: () => void }) {
   const { activeTab, isSettingsOpen, closeSettings } = useFinance();
 
   return (
     <div className="flex min-h-screen bg-[#f8f9ff]">
+      {/* HUD Floating Notification Banner */}
+      <JarvisNotificationBanner />
+
       {/* Persistent Desktop Sidebar */}
       <Sidebar />
 

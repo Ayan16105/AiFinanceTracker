@@ -2,7 +2,8 @@
 
 import React, { useState } from 'react';
 import { useFinance } from '@/context/FinanceContext';
-import { Settings, Sparkles, Wallet, Cloud, Database, Lock, CheckCircle2, RefreshCw } from 'lucide-react';
+import { Settings, Sparkles, Wallet, Cloud, Database, Lock, CheckCircle2, RefreshCw, Bell } from 'lucide-react';
+import { jarvisNotificationService } from '@/lib/notificationService';
 
 export default function Header({ onLogout }: { onLogout?: () => void }) {
   const { safeToSpendRemaining, userSettings, todayDeficit, cloudSyncStatus, refreshCloudData, openSettings } = useFinance();
@@ -57,6 +58,22 @@ export default function Header({ onLogout }: { onLogout?: () => void }) {
             <span className="hidden sm:inline">
               {cloudSyncStatus.connected && cloudSyncStatus.tablesFound ? 'Synced' : 'Local'}
             </span>
+          </button>
+
+          {/* Notification Bell Button */}
+          <button
+            type="button"
+            onClick={async () => {
+              if (jarvisNotificationService.isSupported() && jarvisNotificationService.getPermission() === 'default') {
+                await jarvisNotificationService.requestPermission();
+              }
+              jarvisNotificationService.sendRandomWittyNotification();
+            }}
+            className="w-8 h-8 rounded-full bg-cyan-50 hover:bg-cyan-100 text-cyan-800 border border-cyan-200 flex items-center justify-center transition-all shadow-xs cursor-pointer relative"
+            title="J.A.R.V.I.S. Intelligence Alert (Click to Test Witty Notification)"
+          >
+            <Bell className="w-3.5 h-3.5 text-cyan-700" />
+            <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-cyan-500 animate-pulse" />
           </button>
 
           {/* Settings Button */}

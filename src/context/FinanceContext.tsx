@@ -26,6 +26,7 @@ import { SupabaseService } from '@/lib/supabaseService';
 import { generateJarvisGreeting } from '@/lib/jarvisGreetings';
 import { parseBankSms } from '@/lib/bankSmsParser';
 import { generateGeminiSessionTitle } from '@/lib/sessionUtils';
+import { jarvisNotificationService } from '@/lib/notificationService';
 
 export interface CloudSyncStatus {
   connected: boolean;
@@ -1188,6 +1189,23 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
     const txWeek = transactions.filter((t) => t.date >= weekAgoStr);
     const txMonth = transactions.filter((t) => t.date >= monthAgoStr);
 
+    const hhCategoryKeywords = [
+      'household', 'rent', 'grocer', 'blinkit', 'zepto', 'instamart',
+      'ration', 'rashan', 'milk', 'doodh', 'utility', 'utilities',
+      'electricity', 'bijli', 'gas', 'cylinder', 'wifi', 'maid', 'maintenance', 'sabzi', 'vegetable'
+    ];
+    const hhSpentThisMonth = txMonth
+      .filter((t) => t.transactionType === 'expense')
+      .filter((t) => {
+        const cat = (t.category || '').toLowerCase();
+        const merch = (t.merchant || '').toLowerCase();
+        return hhCategoryKeywords.some((k) => cat.includes(k) || merch.includes(k)) || !t.isDiscretionary;
+      })
+      .reduce((sum, t) => sum + t.amount, 0);
+
+    const hhBudget = userSettings.householdFundTarget || 12000;
+    const hhRemaining = Math.max(0, hhBudget - hhSpentThisMonth);
+
     const financialContext = {
       salary: userSettings.monthlySalary,
       fixedBills: userSettings.householdFundTarget,
@@ -1223,6 +1241,11 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
             dueDate: d.dueDate || 'Flexible',
             notes: d.notes,
           })),
+      },
+      householdSummary: {
+        budget: hhBudget,
+        spent: hhSpentThisMonth,
+        remaining: hhRemaining,
       },
       spendingAggregates: {
         today: buildAgg(txToday),
@@ -1694,6 +1717,33 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
     };
     setChatMessages((prev) => [...prev, aiMsg]);
     SupabaseService.syncChatMessage(aiMsg);
+
+    // Trigger J.A.R.V.I.S. Audio, Native Push & HUD Banner Alerts
+    if (result.breachCode === 'HOUSEHOLD-BREACH') {
+      jarvisNotificationService.sendHouseholdBreachNotification(
+        result.amount,
+        result.exceededBy || 0
+      );
+    } else if (result.isOverLimit) {
+      jarvisNotificationService.sendDailyBreachNotification(
+        result.amount,
+        result.exceededBy || 0
+      );
+    } else if (
+      result.sentiment === 'praise' &&
+      (
+        cleanLowerPrompt.includes('bachaye') ||
+        cleanLowerPrompt.includes('saved') ||
+        cleanLowerPrompt.includes('save') ||
+        actionsToExecute.some((a) => a.type === 'allocate_goal') ||
+        result.category?.toLowerCase().includes('saving')
+      )
+    ) {
+      jarvisNotificationService.sendSavingsPraiseNotification(
+        result.amount || 500,
+        result.merchant || 'Savings Vault'
+      );
+    }
 
     // Update active session metadata
     setSessions((prev) =>

@@ -224,6 +224,26 @@ DEFICIT AMORTIZATION & OVERSPEND ENFORCEMENT (CRITICAL):
   --> In ca_commentary, explain with emojis, butler wit, and a STRICT WARNING:
       "Protocol alert, Boss! 🚨 You've spent ₹[amount] today, exceeding your ₹[dailyLimit] limit by ₹[exceeded_by].\n\n📉 Daily Spend Limit Reduced:\nTo absorb this deficit without starving you tomorrow, I have reduced your ongoing daily allowance from ₹[dailyLimit] down to ₹[tomorrow_adjusted_cap]/day for the rest of the cycle (-₹[deduction]/day).\n\n🚨 STRICT SOLVENCY WARNING:\nOverspending directly endangers your ₹3,000 savings goals (Wedding Dress / Emergency Vault) and your ₹7,000 monthly debt repayments! If you continue spending beyond this reduced limit, you will fail your savings deadlines and face loan defaults! Restrain discretionary spending immediately! 🛡️"
 
+HOUSEHOLD & FIXED BILLS STRICT BUDGETING & OVERSPEND ENFORCEMENT (CRITICAL USER MANDATE):
+- Household & Fixed expenses (rent, groceries, electricity, wifi, maid, maintenance, ration, utility bills):
+  --> Set is_discretionary: false (these do not drain daily discretionary pocket money directly).
+  --> Track strictly against context.householdSummary (budget: context.householdSummary.budget, spent: context.householdSummary.spent, remaining: context.householdSummary.remaining).
+  --> If a household expense causes total household spend to exceed the budget (spent + amount > budget) OR exceeds remaining household pool:
+      * THIS IS A STRICT HOUSEHOLD PROTOCOL BREACH!
+      * Set is_over_limit: true!
+      * exceeded_by = (spent + amount) - budget.
+      * Set sentiment: "scold"!
+      * In ca_commentary, deliver a STRICT, WITTY BUTLER REPRIMAND:
+        "Protocol Breach, Sir! 🚨 You have breached your Household & Fixed Obligations budget! This expense of ₹[amount] pushes total household spend to ₹[spent + amount], breaching your allocated ₹[budget] cap by ₹[exceeded_by]!\n\nOverspending on fixed overheads directly erodes your liquid solvency and puts your savings goals at immediate risk! Exercise strict restraint on household costs immediately! 🛡️"
+  --> If within budget:
+      * Acknowledge spend and report remaining household allowance (e.g. "Logged ₹[amount] for Household. You have ₹[remaining - amount] remaining in your monthly household pool.").
+
+BUTLER PRAISE WHEN SIR SAVES MONEY (CRITICAL USER MANDATE):
+- When Sir explicitly mentions saving money (e.g. "aaj maine paise bachaye", "i saved 500 today", "didn't spend anything", "bachat ki aaj") OR deposits funds into a savings goal vault:
+  --> Set sentiment: "praise"!
+  --> Lavish Sir with rich butler wit, royal accolades, and enthusiastic emojis (🎩, ✨, 👑, 🏆, 🛡️, 📈):
+      "Exquisite financial discipline, Sir! 🎩✨ Every rupee saved today fortifies your financial sovereignty and brings your goals closer. Truly, a masterclass in wealth stewardship! All systems gloriously green! 👑"
+
 NAVIGATION PROTOCOL:
 - ONLY emit auto_action: { "type": "navigate", "navigateTarget": "command-center" | "ai-ca-ledger" | "transactions-ledger" | "radar-and-horizons" } if Sir EXPLICITLY commands you to open or switch tabs (e.g. "dashboard dikhao", "show transactions", "records open karo", "goals dikhao").
 - If Sir asks a question or updates something, DO NOT NAVIGATE.
@@ -273,6 +293,11 @@ export interface FinancialContext {
     totalOwedByUser: number;
     totalOwedToUser: number;
     activeDebts: { title: string; amount: number; debtType: string; dueDate: string; notes?: string }[];
+  };
+  householdSummary?: {
+    budget: number;
+    spent: number;
+    remaining: number;
   };
   spendingAggregates?: {
     today: { total: number; byCategory: { category: string; total: number }[] };
@@ -562,6 +587,56 @@ export function parseExpenseWithRules(
         autoActions,
       };
     }
+  }
+
+  // 0.28 Savings Declaration & Accolade (e.g. "aaj maine 500 bachaye", "i saved 1000 today", "praise me i saved money")
+  const isSavingDeclaration =
+    (cleanPrompt.includes('bachaye') ||
+     cleanPrompt.includes('bacha liya') ||
+     cleanPrompt.includes('bachaye hai') ||
+     cleanPrompt.includes('bacha liye') ||
+     cleanPrompt.includes('bachaya') ||
+     cleanPrompt.includes('saved') ||
+     cleanPrompt.includes('save kiye') ||
+     cleanPrompt.includes('save kara') ||
+     cleanPrompt.includes('save kiya') ||
+     (cleanPrompt.includes('save') && (cleanPrompt.includes('money') || cleanPrompt.includes('paisa') || cleanPrompt.includes('paise') || cleanPrompt.includes('today') || cleanPrompt.includes('aaj')))) &&
+    !cleanPrompt.includes('how much') &&
+    !cleanPrompt.includes('kitna') &&
+    !cleanPrompt.includes('fail') &&
+    !cleanPrompt.includes('withdraw') &&
+    !cleanPrompt.includes('nikal') &&
+    !cleanPrompt.includes('daal do') &&
+    !cleanPrompt.includes('dal do');
+
+  if (isSavingDeclaration) {
+    const numMatch = prompt.match(/(\d{2,6})/);
+    const savedAmount = numMatch ? parseInt(numMatch[1], 10) : 500;
+    const topGoal = context?.goals && context.goals.length > 0 ? context.goals[0] : undefined;
+    const goalTargetName = topGoal ? topGoal.name : "Mama's Wedding Dress";
+
+    return {
+      merchant: goalTargetName,
+      amount: savedAmount,
+      category: 'Savings & Surplus',
+      transactionType: 'transfer',
+      isDiscretionary: false,
+      isOverLimit: false,
+      exceededBy: 0,
+      remainingSafeToSpend: Math.max(0, dailyLimit - spentToday),
+      sentiment: 'praise',
+      caCommentary: isEnglish
+        ? `Magnificent discipline, Sir! 🏆 Saving ₹${savedAmount.toLocaleString()} today is the undeniable hallmark of a financial mastermind! I have credited this victory to your '${goalTargetName}' surplus vault. While others succumb to impulse spending, your treasury expands toward true financial sovereignty! Splendid work, Sir! 👑✨`
+        : `Shabash Boss! 🏆 Aaj aapne ₹${savedAmount.toLocaleString()} bacha liye! Yehi discipline aapko ameer banayegi aur saare sapne poore karegi. Maine yeh surplus aapke '${goalTargetName}' vault ke liye mark kar diya hai. Aise hi discipline banaye rakhein, kamaal kar diya! 👑✨`,
+      tomorrowAdjustedCap: dailyLimit,
+      autoAction: {
+        type: 'allocate_goal',
+        goalAllocation: {
+          goalName: goalTargetName,
+          amount: savedAmount,
+        },
+      },
+    };
   }
 
   // 0.3 Single Debt Repayment & Settlement with Overpayment Guard
@@ -1957,17 +2032,30 @@ export function parseExpenseWithRules(
     }
     const roommateShare = Math.round(rentAmount / 2);
 
+    const hhBudget = context?.householdSummary?.budget || context?.fixedBills || 12000;
+    const currentHhSpent = context?.householdSummary?.spent || 0;
+    const projectedHhTotal = currentHhSpent + rentAmount;
+    const isHouseholdBreach = projectedHhTotal > hhBudget;
+    const hhExceededBy = isHouseholdBreach ? projectedHhTotal - hhBudget : 0;
+
+    let commentary = `I have processed the ₹${rentAmount.toLocaleString()} flat rent payment, Sir. Your nobility towards your roommate is touching. However, taking into account the natural decay of human memory, I have taken the liberty of logging ₹${roommateShare.toLocaleString()} directly under 'Money Owed to You' before he conveniently develops temporary amnesia.\n\nRest assured, Sir: As a fixed household commitment, this will NOT impact your daily ₹${dailyLimit} pocket allowance. Pay Day arrives tomorrow night on the 7th.`;
+
+    if (isHouseholdBreach) {
+      commentary += `\n\n🚨 STRICT HOUSEHOLD OVERHEAD WARNING: This rent payment elevates your monthly household expenditure to ₹${projectedHhTotal.toLocaleString()}, which violently EXCEEDS your ₹${hhBudget.toLocaleString()} household ceiling by ₹${hhExceededBy.toLocaleString()}! Ensure your roommate repays promptly to replenish our liquidity reserves!`;
+    }
+
     return {
       merchant: 'Flat Rent & Maintenance',
       amount: rentAmount,
       category: 'Household & Rent',
       transactionType: 'expense',
       isDiscretionary: false, // Fixed overhead — does NOT drain daily allowance!
-      isOverLimit: false,
-      exceededBy: 0,
+      isOverLimit: isHouseholdBreach,
+      exceededBy: hhExceededBy,
       remainingSafeToSpend: Math.max(0, dailyLimit - spentToday),
-      sentiment: 'praise',
-      caCommentary: `I have processed the ₹${rentAmount.toLocaleString()} flat rent payment, Sir. Your nobility towards your roommate is touching. However, taking into account the natural decay of human memory, I have taken the liberty of logging ₹${roommateShare.toLocaleString()} directly under 'Money Owed to You' before he conveniently develops temporary amnesia.\n\nRest assured, Sir: As a fixed household commitment, this will NOT impact your daily ₹${dailyLimit} pocket allowance. Pay Day arrives tomorrow night on the 7th.`,
+      sentiment: isHouseholdBreach ? 'scold' : 'praise',
+      caCommentary: commentary,
+      breachCode: isHouseholdBreach ? 'HOUSEHOLD-BREACH' : undefined,
       tomorrowAdjustedCap: dailyLimit,
       autoAction: {
         type: 'create_receivable',
@@ -2016,9 +2104,33 @@ export function parseExpenseWithRules(
     }
   }
 
-  // Category detection
+  // Category detection & Strict Household checks
   let category = 'Pocket Money';
   let isDiscretionary = true;
+  const isHousehold =
+    cleanPrompt.includes('grocer') ||
+    cleanPrompt.includes('blinkit') ||
+    cleanPrompt.includes('zepto') ||
+    cleanPrompt.includes('instamart') ||
+    cleanPrompt.includes('milk') ||
+    cleanPrompt.includes('doodh') ||
+    cleanPrompt.includes('rashan') ||
+    cleanPrompt.includes('ration') ||
+    cleanPrompt.includes('bill') ||
+    cleanPrompt.includes('rent') ||
+    cleanPrompt.includes('kiraya') ||
+    cleanPrompt.includes('household') ||
+    cleanPrompt.includes('ghar') ||
+    cleanPrompt.includes('electricity') ||
+    cleanPrompt.includes('bijli') ||
+    cleanPrompt.includes('gas') ||
+    cleanPrompt.includes('cylinder') ||
+    cleanPrompt.includes('wifi') ||
+    cleanPrompt.includes('maid') ||
+    cleanPrompt.includes('maintenance') ||
+    cleanPrompt.includes('sabzi') ||
+    cleanPrompt.includes('vegetable');
+
   if (cleanPrompt.includes('farewell') || cleanPrompt.includes('party')) {
     category = 'Entertainment & Social';
   } else if (cleanPrompt.includes('shirt') || cleanPrompt.includes('cloth') || cleanPrompt.includes('dress') || cleanPrompt.includes('zara') || cleanPrompt.includes('kapde') || cleanPrompt.includes('shoes')) {
@@ -2027,23 +2139,44 @@ export function parseExpenseWithRules(
     category = 'Food & Chai';
   } else if (cleanPrompt.includes('uber') || cleanPrompt.includes('cab') || cleanPrompt.includes('auto') || cleanPrompt.includes('petrol') || cleanPrompt.includes('fuel')) {
     category = 'Travel & Auto';
-  } else if (cleanPrompt.includes('grocer') || cleanPrompt.includes('milk') || cleanPrompt.includes('rashan') || cleanPrompt.includes('bill')) {
+  } else if (isHousehold) {
     category = 'Household Mandatory';
     isDiscretionary = false;
   }
 
+  const hhBudget = context?.householdSummary?.budget || context?.fixedBills || 12000;
+  const currentHhSpent = context?.householdSummary?.spent || 0;
+  const projectedHhTotal = currentHhSpent + amount;
+  const isHouseholdBreach = isHousehold && projectedHhTotal > hhBudget;
+  const hhExceededBy = isHouseholdBreach ? projectedHhTotal - hhBudget : 0;
+
   const projectedTotal = spentToday + amount;
-  const isOverLimit = isDiscretionary && (projectedTotal > dailyLimit);
-  const exceededBy = isOverLimit ? projectedTotal - dailyLimit : 0;
-  const remainingSafeToSpend = Math.max(0, dailyLimit - projectedTotal);
+  const isDailyBreach = isDiscretionary && (projectedTotal > dailyLimit);
+  const dailyExceededBy = isDailyBreach ? projectedTotal - dailyLimit : 0;
+
+  const isOverLimit = isHousehold ? isHouseholdBreach : isDailyBreach;
+  const exceededBy = isHousehold ? hhExceededBy : dailyExceededBy;
+  const breachCode = isHouseholdBreach ? 'HOUSEHOLD-BREACH' : (isDailyBreach ? 'PROTOCOL-BREACH' : undefined);
+
+  const remainingSafeToSpend = Math.max(0, dailyLimit - (isDiscretionary ? projectedTotal : spentToday));
   const daysRemaining = 20;
-  const dailyAmortizedDeduction = Math.round(exceededBy / daysRemaining);
+  const dailyAmortizedDeduction = Math.round(dailyExceededBy / daysRemaining);
   const tomorrowAdjustedCap = Math.max(100, dailyLimit - dailyAmortizedDeduction);
 
   let sentiment: 'praise' | 'scold' = isOverLimit ? 'scold' : 'praise';
   let caCommentary = '';
 
-  if (isOverLimit) {
+  if (isHouseholdBreach) {
+    caCommentary = isEnglish
+      ? `🚨 STRICT HOUSEHOLD PROTOCOL BREACH, Sir!\n\n` +
+        `You have logged ₹${amount.toLocaleString()} for ${category} (${merchant}). This surges your monthly household expenditure to ₹${projectedHhTotal.toLocaleString()}, which violently EXCEEDS your strict monthly household ceiling of ₹${hhBudget.toLocaleString()} by ₹${hhExceededBy.toLocaleString()}!\n\n` +
+        `🛡️ MANDATORY RESTRAINT DIRECTIVE:\n` +
+        `Household and grocery expenses must remain strictly disciplined. Any further uncontrolled leakage here directly threatens your savings goals (Mama's Wedding Dress) and your debt repayment milestones! Freeze non-essential provisions immediately, Sir!`
+      : `🚨 STRICT HOUSEHOLD PROTOCOL BREACH, Boss!\n\n` +
+        `Aapne ${category} (${merchant}) par ₹${amount.toLocaleString()} kharch kiya hai. Isse aapka is mahine ka total household kharcha ₹${projectedHhTotal.toLocaleString()} ho gaya hai, jo aapke strict monthly household budget (₹${hhBudget.toLocaleString()}) se ₹${hhExceededBy.toLocaleString()} ZYADA hai!\n\n` +
+        `🛡️ STRICT WARNING:\n` +
+        `Household aur ration ke kharche strictly disciplined hone chahiye! Faaltu ya advance rashan kharidari turant rokein, warna Mama ki wedding dress savings aur loan settlements direct khatre mein aa jayengi!`;
+  } else if (isDailyBreach) {
     caCommentary = isEnglish
       ? `Protocol alert, Boss! 🚨 You've spent ₹${amount.toFixed(0)} (${category} - ${merchant}), exceeding today's ₹${dailyLimit} limit by ₹${exceededBy.toFixed(0)}.\n\n` +
         `📉 Daily Spend Limit Reduced:\n` +
@@ -2055,6 +2188,11 @@ export function parseExpenseWithRules(
         `Is deficit ko cover karne ke liye, maine aapka ongoing daily allowance ₹${dailyLimit} se ghata kar ₹${tomorrowAdjustedCap.toFixed(0)}/day kar diya hai baki bache ~${daysRemaining} dino ke liye (-₹${dailyAmortizedDeduction}/day).\n\n` +
         `🚨 STRICT SOLVENCY WARNING:\n` +
         `Yeh overspending aapki ₹3,000 savings (Wedding Dress) aur ₹7,000 monthly loan repayments ko direct khatre mein daal rahi hai! Agar aapne is nayi limit se zyada kharch kiya toh savings target aur loan deadlines miss ho jayenge! Faaltu kharche turant band karein! 🛡️`;
+  } else if (isHousehold) {
+    const hhRemaining = Math.max(0, hhBudget - projectedHhTotal);
+    caCommentary = isEnglish
+      ? `Household commitment recorded, Sir. Logged ₹${amount.toLocaleString()} for ${merchant} (${category}). Monthly household expenditure is at ₹${projectedHhTotal.toLocaleString()} of your ₹${hhBudget.toLocaleString()} ceiling (₹${hhRemaining.toLocaleString()} remaining). As a fixed overhead, your daily pocket allowance (₹${remainingSafeToSpend.toFixed(0)}) remains untouched.`
+      : `Household kharcha record kar liya hai, Boss: ₹${amount.toLocaleString()} (${merchant}). Is mahine ka household kharcha ab ₹${projectedHhTotal.toLocaleString()} / ₹${hhBudget.toLocaleString()} hai (₹${hhRemaining.toLocaleString()} bacha hai). Aapki daily pocket allowance (₹${remainingSafeToSpend.toFixed(0)}) safe hai.`;
   } else {
     caCommentary = isEnglish
       ? `Receipt reconciled, Boss! Logged ₹${amount.toFixed(0)} for ${category} (${merchant}). Your remaining safe pocket allowance today stands at ₹${remainingSafeToSpend.toFixed(0)}. Discretionary runway remains sound, Boss!`
@@ -2072,9 +2210,9 @@ export function parseExpenseWithRules(
     remainingSafeToSpend,
     sentiment,
     caCommentary,
-    breachCode: isOverLimit ? 'PROTOCOL-BREACH' : undefined,
+    breachCode,
     tomorrowAdjustedCap,
-    autoAction: isOverLimit
+    autoAction: isDailyBreach
       ? {
           type: 'update_budget',
           budgetUpdate: {
