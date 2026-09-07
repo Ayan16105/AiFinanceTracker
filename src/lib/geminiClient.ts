@@ -2442,8 +2442,21 @@ export async function parseExpenseWithGemini(
     (cleanPrompt.includes('household') || cleanPrompt.includes('house hold') || cleanPrompt.includes('ghar ka kharcha')) &&
     (cleanPrompt.includes('exceed') || cleanPrompt.includes('cross') || cleanPrompt.includes('over limit') || cleanPrompt.includes('limit cross') || cleanPrompt.includes('zyada ho gaya') || cleanPrompt.includes('over budget'));
 
-  // Immediate deterministic execution for safety-critical simulations, commands, and household budget inquiries
-  if (isHypo || isDeletion || isAdjustUpcoming || isHhRemaining || isHhBreachCheck) {
+  const isNegative = cleanPrompt.includes('-') && /(?:^|\s)-\s*(?:₹|rs\.?|inr)?\s*\d+/i.test(cleanPrompt);
+  const isFatFinger = /(?:₹|rs\.?|inr)?\s*(\d{6,})/i.test(cleanPrompt) && !/\b(?:confirm|confirmed|haan?|yes|sahi hai)\b/i.test(cleanPrompt) && !cleanPrompt.includes('rent') && !cleanPrompt.includes('kiraya') && !cleanPrompt.includes('salary');
+  const isGoalWithdrawalAttempt =
+    (cleanPrompt.includes('fund') || cleanPrompt.includes('goal') || cleanPrompt.includes('saving') || cleanPrompt.includes('buffer') || cleanPrompt.includes('emergency') || cleanPrompt.includes('vault') || (context?.goals && context.goals.some((g) => cleanPrompt.includes(g.name.toLowerCase())))) &&
+    (cleanPrompt.includes('nikaal') || cleanPrompt.includes('nikal') || cleanPrompt.includes('withdraw') || cleanPrompt.includes('le lo') || cleanPrompt.includes('lelo') || cleanPrompt.includes('de do') || cleanPrompt.includes('dedo') || cleanPrompt.includes('transfer') || cleanPrompt.includes('bhejo') || cleanPrompt.includes('bhej'));
+  const isGoalAllocationAttempt =
+    (cleanPrompt.includes('goal') || cleanPrompt.includes('saving') || cleanPrompt.includes('vault') || cleanPrompt.includes('fund')) &&
+    (cleanPrompt.includes('deposit') || cleanPrompt.includes('allocate') || cleanPrompt.includes('daal') || cleanPrompt.includes('dal') || cleanPrompt.includes('jama'));
+  const isDebtRepayment = extractMultiSettlements(prompt) !== null || /pay\s*back|repay|settle|settel|clear|paid|chukta|chuka|de\s*diye|wapas\s*diye|lautaye/i.test(cleanPrompt);
+  const isRecordCorrection =
+    (cleanPrompt.includes('fix') || cleanPrompt.includes('change') || cleanPrompt.includes('galat') || cleanPrompt.includes('wrong') || cleanPrompt.includes('wait') || cleanPrompt.includes('arre')) &&
+    (cleanPrompt.includes('owes me') || cleanPrompt.includes('lena hai') || cleanPrompt.includes('lene hai') || cleanPrompt.includes('receivable') || cleanPrompt.includes('flip'));
+
+  // Immediate deterministic execution for safety-critical simulations, commands, goal operations, and debt settlements
+  if (isHypo || isDeletion || isAdjustUpcoming || isHhRemaining || isHhBreachCheck || isNegative || isFatFinger || isGoalWithdrawalAttempt || isGoalAllocationAttempt || isDebtRepayment || isRecordCorrection) {
     return parseExpenseWithRules(prompt, dailyLimit, spentToday, context, chatHistory);
   }
 
@@ -2609,7 +2622,7 @@ RULES FOR YOUR RESPONSE:
         .replace(/\bsanctuary reserves\b/gi, 'savings');
     }
 
-    const parsedAmount = typeof parsed.amount === 'number' ? parsed.amount : parseFloat(parsed.amount) || 0;
+    let parsedAmount = typeof parsed.amount === 'number' ? parsed.amount : parseFloat(parsed.amount) || 0;
     const isHouseholdExpense =
       cleanPrompt.includes('household') ||
       cleanPrompt.includes('house hold') ||
@@ -2670,6 +2683,34 @@ RULES FOR YOUR RESPONSE:
             `🛡️ STRICT WARNING:\n` +
             `Household aur ration ke kharche strictly control mein hone chahiye! Faaltu kharche turant rokein, warna loan repayments aur savings goals khatre mein aa jayenge!`;
       }
+    }
+
+    // Universal Abort & Halt Safeguard:
+    // If commentary indicates that the transaction was halted, aborted, cancelled, or intercepted,
+    // force parsedAmount to 0 and clear any auto_action to guarantee zero transactions are recorded!
+    const commentaryLower = finalCommentary.toLowerCase();
+    const isExplicitlyHalted =
+      commentaryLower.includes('transaction halted') ||
+      commentaryLower.includes('protocol abort') ||
+      commentaryLower.includes('insolvency warning') ||
+      commentaryLower.includes('security intercept') ||
+      commentaryLower.includes('invalid transaction') ||
+      commentaryLower.includes('zero funds have been transferred') ||
+      commentaryLower.includes('transaction rok diya gaya') ||
+      commentaryLower.includes('allocation cancelled') ||
+      commentaryLower.includes('allocation cancel') ||
+      commentaryLower.includes('cannot withdraw') ||
+      commentaryLower.includes('withdraw nahi kar sakte') ||
+      commentaryLower.includes('typographical anomaly') ||
+      commentaryLower.includes('mathematically prohibited');
+
+    if (isExplicitlyHalted) {
+      parsedAmount = 0;
+      sentiment = 'scold';
+      isOverLimit = false;
+      exceededBy = 0;
+      parsed.auto_action = undefined;
+      parsed.auto_actions = [];
     }
 
     return {

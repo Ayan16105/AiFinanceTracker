@@ -1426,18 +1426,17 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
 
     if (isWithdrawAttempt) {
       const targetName = (withdrawAct?.goalWithdrawal?.goalName || result.merchant || '').toLowerCase();
-      const targetGoal = goals.find((g) => isGoalMatch(g.name, targetName));
+      const targetGoal = goals.find((g) => {
+        const gName = g.name.toLowerCase();
+        if (isGoalMatch(g.name, targetName)) return true;
+        if (cleanLowerPrompt.includes(gName)) return true;
+        const words = gName.split(/[\s\-_\/]+/).filter((w) => w.length > 2);
+        return words.some((w) => cleanLowerPrompt.includes(w));
+      });
       const reqWithdrawAmount = Math.abs(withdrawAct?.goalWithdrawal?.amount || result.amount || 0);
 
-      if (withdrawAct || (targetGoal && reqWithdrawAmount > 0)) {
-        if (!targetGoal) {
-          result.amount = 0;
-          result.sentiment = 'scold';
-          result.isOverLimit = false;
-          result.caCommentary = `Goal Not Found, Sir! 🛡️✋ I could not locate an active savings vault matching '${targetName || 'the requested goal'}'. Active vaults: ${goals.map((g) => g.name).join(', ') || 'None'}.`;
-          result.autoActions = [];
-          result.autoAction = undefined;
-        } else if (targetGoal.currentAmount <= 0) {
+      if (targetGoal) {
+        if (targetGoal.currentAmount <= 0) {
           result.amount = 0;
           result.sentiment = 'scold';
           result.isOverLimit = false;
@@ -1448,42 +1447,88 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
           result.amount = 0;
           result.sentiment = 'scold';
           result.isOverLimit = false;
-          result.caCommentary = `Protocol Abort, Sir! 🛡️✋ You only have ₹${targetGoal.currentAmount.toLocaleString()} saved in your '${targetGoal.name}' vault. You cannot withdraw ₹${reqWithdrawAmount.toLocaleString()} from a reserve that lacks those funds! (Maximum available: ₹${targetGoal.currentAmount.toLocaleString()}). No funds have been deducted or credited.`;
+          result.caCommentary = `Protocol Abort, Sir! 🛡️✋ You only have ₹${targetGoal.currentAmount.toLocaleString()} saved in your '${targetGoal.name}' vault. You cannot withdraw ₹${reqWithdrawAmount.toLocaleString()} from a reserve that lacks those funds! (Maximum available: ₹${targetGoal.currentAmount.toLocaleString()}). Transaction halted — zero funds have been transferred.`;
           result.autoActions = [];
           result.autoAction = undefined;
         }
-      }
-    }
-
-    // 3. Goal Over-Allocation Intercept (Prevent depositing more into goals than available liquid checking cash)
-    const allocAct = (result.autoActions || (result.autoAction ? [result.autoAction] : [])).find((a) => a.type === 'allocate_goal');
-    if (allocAct) {
-      const reqAllocAmount = Math.abs(allocAct.goalAllocation?.amount || result.amount || 0);
-      if (reqAllocAmount > currentBalance) {
+      } else if (withdrawAct || cleanLowerPrompt.includes('withdraw') || cleanLowerPrompt.includes('nikaal') || cleanLowerPrompt.includes('nikal')) {
         result.amount = 0;
         result.sentiment = 'scold';
         result.isOverLimit = false;
-        result.caCommentary = `Insolvency Warning, Sir! 🛡️✋ Your Current Liquid Balance is only ₹${currentBalance.toLocaleString()}. You cannot allocate ₹${reqAllocAmount.toLocaleString()} into '${allocAct.goalAllocation?.goalName || result.merchant}' without plunging your checking account into an illegal negative deficit! Allocation cancelled.`;
+        result.caCommentary = `Goal Not Found, Sir! 🛡️✋ I could not locate an active savings vault matching '${targetName || prompt}'. Active vaults: ${goals.map((g) => g.name).join(', ') || 'None'}. Transaction halted.`;
         result.autoActions = [];
         result.autoAction = undefined;
       }
     }
 
-    // 4. Negative Amount Normalization
-    if (result.amount < 0) {
-      result.amount = Math.abs(result.amount);
+    // 3. Goal Over-Allocation Intercept (Prevent depositing more into goals than available liquid checking cash)
+    const allocAct = (result.autoActions || (result.autoAction ? [result.autoAction] : [])).find((a) => a.type === 'allocate_goal');
+    const isAllocAttempt =
+      allocAct !== undefined ||
+      ((cleanLowerPrompt.includes('goal') || cleanLowerPrompt.includes('saving') || cleanLowerPrompt.includes('vault')) &&
+       (cleanLowerPrompt.includes('deposit') || cleanLowerPrompt.includes('allocate') || cleanLowerPrompt.includes('daal') || cleanLowerPrompt.includes('dal') || cleanLowerPrompt.includes('jama')));
+
+    if (isAllocAttempt) {
+      const reqAllocAmount = Math.abs(allocAct?.goalAllocation?.amount || result.amount || 0);
+      if (reqAllocAmount > currentBalance) {
+        result.amount = 0;
+        result.sentiment = 'scold';
+        result.isOverLimit = false;
+        result.caCommentary = `Insolvency Warning, Sir! 🛡️✋ Your Current Liquid Balance is only ₹${currentBalance.toLocaleString()}. You cannot allocate ₹${reqAllocAmount.toLocaleString()} into '${allocAct?.goalAllocation?.goalName || result.merchant}' without plunging your checking account into an illegal negative deficit! Allocation cancelled.`;
+        result.autoActions = [];
+        result.autoAction = undefined;
+      }
+    }
+
+    // 4. Negative Amount Rejection
+    if (result.amount < 0 || (cleanLowerPrompt.includes('-') && /(?:^|\s)-\s*(?:₹|rs\.?|inr)?\s*\d+/i.test(cleanLowerPrompt))) {
+      result.amount = 0;
+      result.sentiment = 'scold';
+      result.isOverLimit = false;
+      result.caCommentary = `Invalid Transaction, Sir! 🛡️✋ Negative expenditure amounts are mathematically prohibited in your ledger. Please log a positive monetary figure.`;
+      result.autoActions = [];
+      result.autoAction = undefined;
+    }
+
+    // 5. Universal Abort & Halt Safeguard:
+    // If the CA commentary or sentiment explicitly stated that the transaction was halted, aborted, cancelled, or intercepted,
+    // NEVER allow any positive amount, ledger insertion, or auto-action execution!
+    const commentaryLower = (result.caCommentary || '').toLowerCase();
+    const isExplicitlyHalted =
+      commentaryLower.includes('transaction halted') ||
+      commentaryLower.includes('protocol abort') ||
+      commentaryLower.includes('insolvency warning') ||
+      commentaryLower.includes('security intercept') ||
+      commentaryLower.includes('invalid transaction') ||
+      commentaryLower.includes('zero funds have been transferred') ||
+      commentaryLower.includes('transaction rok diya gaya') ||
+      commentaryLower.includes('allocation cancelled') ||
+      commentaryLower.includes('allocation cancel') ||
+      commentaryLower.includes('cannot withdraw') ||
+      commentaryLower.includes('withdraw nahi kar sakte') ||
+      commentaryLower.includes('typographical anomaly') ||
+      commentaryLower.includes('mathematically prohibited');
+
+    if (isExplicitlyHalted) {
+      result.amount = 0;
+      result.autoActions = [];
+      result.autoAction = undefined;
+      result.isOverLimit = false;
+      result.exceededBy = 0;
     }
 
     // 3. Execute J.A.R.V.I.S. Actions (Full App Navigation & Control)
-    const actionsToExecute: AutoAction[] = (result.autoActions && result.autoActions.length > 0)
-      ? result.autoActions
-      : (result.autoAction ? [result.autoAction] : []);
+    const actionsToExecute: AutoAction[] = isExplicitlyHalted
+      ? []
+      : (result.autoActions && result.autoActions.length > 0)
+        ? result.autoActions
+        : (result.autoAction ? [result.autoAction] : []);
 
     const settleActions = actionsToExecute.filter((a) => a.type === 'settle_debt');
     const hasSettleActions = settleActions.length > 0;
 
-    // 2. Add New Transaction to Journal (only if amount > 0, NOT a simulation, and NO debt settlements handled individually)
-    if (result.amount > 0 && !isHypotheticalPrompt && !hasSettleActions) {
+    // 2. Add New Transaction to Journal (only if amount > 0, NOT a simulation, NO debt settlements handled individually, and NOT explicitly halted)
+    if (result.amount > 0 && !isHypotheticalPrompt && !hasSettleActions && !isExplicitlyHalted) {
       const newTx: Transaction = {
         id: `tx-${Date.now()}`,
         userId: userSettings.userId,
@@ -1703,6 +1748,10 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
         const allocAmount = alloc?.amount || result.amount;
 
         if (allocAmount > 0) {
+          if (allocAmount > currentBalance) {
+            console.warn(`[J.A.R.V.I.S. Guard] Prevented unbacked allocation of ₹${allocAmount} (balance: ₹${currentBalance})`);
+            continue;
+          }
           setGoals((prev) => {
             const idx = prev.findIndex((g) => isGoalMatch(g.name, targetName));
             if (idx !== -1) {
@@ -1751,6 +1800,10 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
           setGoals((prev) =>
             prev.map((g) => {
               if (isGoalMatch(g.name, targetName)) {
+                if (withdrawAmount > g.currentAmount) {
+                  console.warn(`[J.A.R.V.I.S. Guard] Prevented over-withdrawal of ₹${withdrawAmount} from '${g.name}' (current: ₹${g.currentAmount})`);
+                  return g;
+                }
                 const updated = Math.max(0, g.currentAmount - withdrawAmount);
                 const updatedGoal: SavingsGoal = {
                   ...g,
