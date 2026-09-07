@@ -244,6 +244,37 @@ BUTLER PRAISE WHEN SIR SAVES MONEY (CRITICAL USER MANDATE):
   --> Lavish Sir with rich butler wit, royal accolades, and enthusiastic emojis (🎩, ✨, 👑, 🏆, 🛡️, 📈):
       "Exquisite financial discipline, Sir! 🎩✨ Every rupee saved today fortifies your financial sovereignty and brings your goals closer. Truly, a masterclass in wealth stewardship! All systems gloriously green! 👑"
 
+INTENT-BASED DYNAMIC CONVERSATIONAL INTELLIGENCE (CRITICAL USER MANDATE):
+You are J.A.R.V.I.S., a sentient AI butler. NEVER act like an inflexible robot reciting pre-baked scripts or canned customer care responses!
+Always analyze Sir's prompt to understand his EXACT INTENT and converse with natural wit, directness, and precision:
+
+1. INTENT: REMAINING_HOUSEHOLD_BUDGET (e.g. "household kitna bacha h", "how much left for grocery", "ghar ke kharche me kitna bacha hai", "household balance"):
+   - Sir wants to know HOW MUCH CASH IS LEFT in his household & fixed bills pool.
+   - Set amount: 0, transaction_type: "transfer", is_discretionary: false.
+   - ANSWER DIRECTLY ABOUT THE REMAINING HOUSEHOLD AMOUNT!
+   - If healthy remaining:
+     * Hinglish: "Boss, aapke monthly household budget mein se abhi ₹[remaining] bache hue hain (out of ₹[budget] ceiling, ₹[spent] spend hua hai). Rashan aur daily provisions mast chal rahe hain!"
+     * English: "Sir, you currently have ₹[remaining] remaining in your household pool (out of ₹[budget] allocated, ₹[spent] expended). Provisions remain comfortably funded!"
+   - If low remaining:
+     * Hinglish: "Sir, household pool mein sirf ₹[remaining] bache hain. Aage ke dino ke liye thoda control rakhna hoga!"
+     * English: "Sir, only ₹[remaining] remains in your household reserve. We should keep a tight rein on further provisions until the cycle resets!"
+   - If exceeded:
+     * Hinglish: "Boss, household budget exhausted ho chuka hai aur hum ₹[exceeded_by] deficit mein hain! Abhi koi extra outlays allow nahi hain."
+     * English: "Boss, your household budget is fully exhausted and operating at a ₹[exceeded_by] deficit! No safe provisions allowance remains."
+   - DO NOT SAY "No you have not exceeded your household limit..." unless Sir explicitly asked if he exceeded!
+
+2. INTENT: BREACH_VERIFICATION (e.g. "did i exceed household limit", "did i cross the limit", "kya limit cross hui", "am i over budget"):
+   - Sir is asking a YES/NO verification about whether a budget rule was broken.
+   - If spent > budget: "🚨 YES, Sir! You have EXCEEDED your household limit by ₹[spent - budget]! (Spent: ₹[spent], Budget: ₹[budget])."
+   - If spent <= budget: "No, Sir. You have NOT exceeded your household limit. You have spent ₹[spent] of ₹[budget] with ₹[remaining] safe."
+
+3. INTENT: CASUAL_OR_EMOTIONAL_STATUS (e.g. "sab kaisa chal raha hai", "how am i doing", "kya hisaab hai", "bhai tension ho rahi hai paise ki"):
+   - Sir wants emotional reassurance and high-level financial clarity.
+   - Give a confident, witty J.A.R.V.I.S. response: reassure Sir, mention Safe Daily allowance left today, household cushion, and that Pay Day is coming up.
+
+4. INTENT: LOG_EXPENSE (e.g. "Log 12000 to household", "Add 100 to household", "Chai 40", "Uber 250"):
+   - Sir is logging an actual money outflow. Extract amount and category, check limits, and confirm with concise butler wit.
+
 NAVIGATION PROTOCOL:
 - ONLY emit auto_action: { "type": "navigate", "navigateTarget": "command-center" | "ai-ca-ledger" | "transactions-ledger" | "radar-and-horizons" } if Sir EXPLICITLY commands you to open or switch tabs (e.g. "dashboard dikhao", "show transactions", "records open karo", "goals dikhao").
 - If Sir asks a question or updates something, DO NOT NAVIGATE.
@@ -1845,12 +1876,55 @@ export function parseExpenseWithRules(
     };
   }
 
-  // 5.5 Household Limit Inquiry & Overspending Check (e.g. "Did i exceed house hold limit", "Did i exceed household limit", "household limit exceed hua kya", "have i exceeded household limit")
-  const isHouseholdLimitInquiry =
-    (cleanPrompt.includes('household') || cleanPrompt.includes('house hold') || cleanPrompt.includes('ghar ka kharcha')) &&
-    (cleanPrompt.includes('exceed') || cleanPrompt.includes('cross') || cleanPrompt.includes('over') || cleanPrompt.includes('kitna') || cleanPrompt.includes('status') || cleanPrompt.includes('check') || cleanPrompt.includes('limit') || cleanPrompt.includes('bacha'));
+  // 5.51 Intent: How much household budget is remaining? (e.g. "household kitna bacha h", "how much left for grocery", "household me kitna bacha hai", "ghar ke kharche me kitna bacha")
+  const isHouseholdRemainingQuery =
+    (cleanPrompt.includes('household') || cleanPrompt.includes('house hold') || cleanPrompt.includes('ghar ka kharcha') || cleanPrompt.includes('rashan') || cleanPrompt.includes('grocery')) &&
+    (cleanPrompt.includes('kitna bacha') || cleanPrompt.includes('kitne bache') || cleanPrompt.includes('kitna paisa bacha') || cleanPrompt.includes('kitna bacha h') || cleanPrompt.includes('how much left') || cleanPrompt.includes('how much is left') || cleanPrompt.includes('remaining') || cleanPrompt.includes('balance kitna'));
 
-  if (isHouseholdLimitInquiry) {
+  if (isHouseholdRemainingQuery) {
+    const hhBudget = context?.householdSummary?.budget ?? context?.fixedBills ?? 10000;
+    const currentHhSpent = context?.householdSummary?.spent || 0;
+    const isExceeded = currentHhSpent > hhBudget;
+    const overspentBy = isExceeded ? currentHhSpent - hhBudget : 0;
+    const remainingInHh = Math.max(0, hhBudget - currentHhSpent);
+
+    let caCommentary = '';
+    if (isExceeded) {
+      caCommentary = isEnglish
+        ? `Boss, your household budget is fully exhausted and currently operating at a ₹${overspentBy.toLocaleString()} deficit (₹${currentHhSpent.toLocaleString()} spent vs ₹${hhBudget.toLocaleString()} ceiling). No safe funds remain in household reserves for this month!`
+        : `Boss, household budget mein abhi kuch nahi bacha hai, balki hum ₹${overspentBy.toLocaleString()} deficit mein chal rahe hain (₹${currentHhSpent.toLocaleString()} kharch ho chuka hai ₹${hhBudget.toLocaleString()} limit mein se). Abhi koi extra rashan khareedna theek nahi hoga!`;
+    } else if (remainingInHh <= 2000 && remainingInHh > 0) {
+      caCommentary = isEnglish
+        ? `Sir, you have ₹${remainingInHh.toLocaleString()} left in your household pool for this cycle (₹${currentHhSpent.toLocaleString()} spent of your ₹${hhBudget.toLocaleString()} allocation). Provisions are running tight, so let's keep grocery trips strictly necessary!`
+        : `Boss, monthly household budget mein se abhi ₹${remainingInHh.toLocaleString()} bache hue hain (₹${hhBudget.toLocaleString()} mein se ₹${currentHhSpent.toLocaleString()} kharcha ho chuka hai). Mahine ke aage ke dino ke liye thoda haath kheench ke chalna behtar rahega!`;
+    } else {
+      caCommentary = isEnglish
+        ? `Sir, you currently have ₹${remainingInHh.toLocaleString()} remaining in your household allocation (₹${currentHhSpent.toLocaleString()} spent out of your ₹${hhBudget.toLocaleString()} monthly ceiling). Your provision reserves and daily pocket money (₹${Math.max(0, dailyLimit - spentToday).toFixed(0)}) remain completely solid, Sir! 🛒✨`
+        : `Boss, household budget mein se abhi ₹${remainingInHh.toLocaleString()} bache hue hain (₹${hhBudget.toLocaleString()} total budget mein se ab tak ₹${currentHhSpent.toLocaleString()} spend hua hai). Rashan aur provisions mast chal rahe hain, tension lene ki bilkul baat nahi hai! 🛒✨`;
+    }
+
+    return {
+      merchant: 'Household Reserve',
+      amount: 0,
+      category: 'Household Mandatory',
+      transactionType: 'transfer',
+      isDiscretionary: false,
+      isOverLimit: isExceeded,
+      exceededBy: overspentBy,
+      remainingSafeToSpend: Math.max(0, dailyLimit - spentToday),
+      sentiment: isExceeded ? 'scold' : 'praise',
+      breachCode: isExceeded ? 'HOUSEHOLD-BREACH' : undefined,
+      caCommentary,
+      tomorrowAdjustedCap: dailyLimit,
+    };
+  }
+
+  // 5.52 Intent: Did I exceed household limit? (e.g. "Did i exceed house hold limit", "Did i exceed household limit", "household limit exceed hua kya", "have i exceeded household limit")
+  const isHouseholdBreachCheck =
+    (cleanPrompt.includes('household') || cleanPrompt.includes('house hold') || cleanPrompt.includes('ghar ka kharcha')) &&
+    (cleanPrompt.includes('exceed') || cleanPrompt.includes('cross') || cleanPrompt.includes('over limit') || cleanPrompt.includes('limit cross') || cleanPrompt.includes('zyada ho gaya') || cleanPrompt.includes('over budget'));
+
+  if (isHouseholdBreachCheck) {
     const hhBudget = context?.householdSummary?.budget ?? context?.fixedBills ?? 10000;
     const currentHhSpent = context?.householdSummary?.spent || 0;
     const isExceeded = currentHhSpent > hhBudget;
@@ -1870,23 +1944,11 @@ export function parseExpenseWithRules(
       breachCode: isExceeded ? 'HOUSEHOLD-BREACH' : undefined,
       caCommentary: isExceeded
         ? (isEnglish
-            ? `🚨 YES, Sir! You have EXCEEDED your monthly household limit!\n\n` +
-              `• Allocated Household Budget: ₹${hhBudget.toLocaleString()}\n` +
-              `• Total Household Expended: ₹${currentHhSpent.toLocaleString()}\n` +
-              `• Deficit Overrun: ₹${overspentBy.toLocaleString()} OVER BUDGET!\n\n` +
-              `🛡️ STRICT REPRIMAND:\n` +
-              `Household overhead is strictly capped. Any further leakage directly erodes your liquidity, loan repayment schedule, and savings goals! Freeze all non-essential provisions immediately, Sir!`
-            : `🚨 HAAN Boss! Aapka monthly household limit EXCEED ho chuka hai!\n\n` +
-              `• Monthly Household Budget: ₹${hhBudget.toLocaleString()}\n` +
-              `• Total Household Kharcha: ₹${currentHhSpent.toLocaleString()}\n` +
-              `• Budget Se Zyada Kharch: ₹${overspentBy.toLocaleString()} (OVER LIMIT)!\n\n` +
-              `🛡️ STRICT REPRIMAND:\n` +
-              `Household aur grocery ke kharche strictly control mein rakhein warna savings aur loan repayments par direct asar padega. Faaltu kharche turant band karein!`)
+            ? `🚨 YES, Sir! You have EXCEEDED your monthly household limit!\n\n• Allocated Household Budget: ₹${hhBudget.toLocaleString()}\n• Total Household Expended: ₹${currentHhSpent.toLocaleString()}\n• Deficit Overrun: ₹${overspentBy.toLocaleString()} OVER BUDGET!\n\n🛡️ STRICT REPRIMAND:\nHousehold overhead is strictly capped. Any further leakage directly erodes your liquidity, loan repayment schedule, and savings goals! Freeze all non-essential provisions immediately, Sir!`
+            : `🚨 HAAN Boss! Aapka monthly household limit EXCEED ho chuka hai!\n\n• Monthly Household Budget: ₹${hhBudget.toLocaleString()}\n• Total Household Kharcha: ₹${currentHhSpent.toLocaleString()}\n• Budget Se Zyada Kharch: ₹${overspentBy.toLocaleString()} (OVER LIMIT)!\n\n🛡️ STRICT REPRIMAND:\nHousehold aur grocery ke kharche strictly control mein rakhein warna savings aur loan repayments par direct asar padega. Faaltu kharche turant band karein!`)
         : (isEnglish
-            ? `Checking the ledger now, Sir! 🎩📊\n\n` +
-              `No, you have NOT exceeded your household limit. Your household expenses currently stand at ₹${currentHhSpent.toLocaleString()} of your ₹${hhBudget.toLocaleString()} allocation (₹${remainingInHh.toLocaleString()} remaining in reserve). Your daily pocket allowance remains safe and untouched at ₹${Math.max(0, dailyLimit - spentToday).toFixed(0)}! 🛡️✨`
-            : `Checking the records now, Boss! 🎩📊\n\n` +
-              `Nahi, aapka household limit exceed nahi hua hai. Aapka household kharcha abhi ₹${currentHhSpent.toLocaleString()} / ₹${hhBudget.toLocaleString()} hai (₹${remainingInHh.toLocaleString()} bacha hua hai). Daily pocket allowance safe hai! 🛡️✨`),
+            ? `Checking the ledger now, Sir! 🎩📊\n\nNo, you have NOT exceeded your household limit. Your household expenses currently stand at ₹${currentHhSpent.toLocaleString()} of your ₹${hhBudget.toLocaleString()} allocation (₹${remainingInHh.toLocaleString()} remaining in reserve). Your daily pocket allowance remains safe and untouched at ₹${Math.max(0, dailyLimit - spentToday).toFixed(0)}! 🛡️✨`
+            : `Checking the records now, Boss! 🎩📊\n\nNahi, aapka household limit exceed nahi hua hai. Aapka household kharcha abhi ₹${currentHhSpent.toLocaleString()} / ₹${hhBudget.toLocaleString()} hai (₹${remainingInHh.toLocaleString()} safe bacha hua hai). Daily pocket allowance green hai! 🛡️✨`),
       tomorrowAdjustedCap: dailyLimit,
     };
   }
@@ -2299,12 +2361,8 @@ export async function parseExpenseWithGemini(
     (cleanPrompt.includes('daily') || cleanPrompt.includes('spent') || cleanPrompt.includes('spend')) &&
     (cleanPrompt.includes('party') || cleanPrompt.includes('event') || cleanPrompt.includes('pay') || cleanPrompt.includes('accordingly') || cleanPrompt.includes('farewell') || cleanPrompt.includes('plan'));
 
-  const isHouseholdLimitInquiry =
-    (cleanPrompt.includes('household') || cleanPrompt.includes('house hold') || cleanPrompt.includes('ghar ka kharcha')) &&
-    (cleanPrompt.includes('exceed') || cleanPrompt.includes('cross') || cleanPrompt.includes('over') || (cleanPrompt.includes('limit') && (cleanPrompt.includes('did') || cleanPrompt.includes('kya') || cleanPrompt.includes('check') || cleanPrompt.includes('status'))));
-
   // Immediate deterministic execution for safety-critical simulations and commands
-  if (isHypo || isDeletion || isAdjustUpcoming || isHouseholdLimitInquiry) {
+  if (isHypo || isDeletion || isAdjustUpcoming) {
     return parseExpenseWithRules(prompt, dailyLimit, spentToday, context, chatHistory);
   }
 
