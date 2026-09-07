@@ -801,7 +801,9 @@ export default function LedgerChat() {
                                 ? 'Debt Offset Applied'
                                 : msg.metadata?.autoAction?.type === 'create_receivable'
                                   ? 'Receivable Appended'
-                                  : 'Telemetry Synced'}
+                                  : msg.metadata?.autoAction?.type === 'settle_debt'
+                                    ? 'Debt Settled'
+                                    : 'Telemetry Synced'}
                         </span>
                       )}
                     </div>

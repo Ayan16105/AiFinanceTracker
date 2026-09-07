@@ -55,17 +55,28 @@ DEBTS, LOANS & OBLIGATIONS (CRITICAL):
      --> Emit auto_action: { "type": "edit_last_transaction", "transactionUpdate": { "amount": number } }.
      --> Respond: "Correction applied, Sir! Adjusted the last transaction amount to ₹[newAmount]. Your daily spend figures have been recalculated."
 7. MULTIPLE DEBT SETTLEMENTS / PAYBACKS IN A SINGLE PROMPT (CRITICAL USER MANDATE):
-   - When Sir commands multiple debt repayments or settlements in one prompt (e.g., "payback 5000 to kamran and also settle 2000 and 1000 for man 1 and 2 respectively", "kamran ko 5000 aur rahul ko 2000 de diye"):
-     --> Set amount: sum of all payback amounts (e.g. 5000 + 2000 + 1000 = 8000), transaction_type: "expense", category: "Debt Repayment", merchant: "Multiple Debt Settlements", is_discretionary: false.
+   - When Sir commands multiple debt repayments or settlements in one prompt (e.g., "clear two separate debt 2000 to kamran and 3000 to rahul", "payback 5000 to kamran and also settle 2000 and 1000 for man 1 and 2 respectively", "kamran ko 5000 aur rahul ko 2000 de diye"):
+     --> Set amount: sum of all payback amounts (e.g. 2000 + 3000 = 5000), transaction_type: "expense", category: "Debt Repayment", merchant: "Multiple Debt Settlements", is_discretionary: false.
      --> DO NOT PENALIZE TODAY'S DAILY SPEND LIMIT (is_discretionary: false)!
      --> ALWAYS emit auto_actions array containing EACH individual settlement:
          "auto_actions": [
-           { "type": "settle_debt", "settleCounterparty": "Kamran", "debtAmount": 5000, "isPartial": true },
-           { "type": "settle_debt", "settleCounterparty": "Man 1", "debtAmount": 2000, "isPartial": true },
-           { "type": "settle_debt", "settleCounterparty": "Man 2", "debtAmount": 1000, "isPartial": true }
+           { "type": "settle_debt", "settleCounterparty": "Kamran", "debtAmount": 2000, "isPartial": false },
+           { "type": "settle_debt", "settleCounterparty": "Rahul", "debtAmount": 3000, "isPartial": false }
          ]
      --> In ca_commentary, explain clearly each deduction:
-         "Understood, Sir! Processed compound debt settlement: deducted ₹5,000 for Kamran, ₹2,000 for Man 1, and ₹1,000 for Man 2 respectively. Balances updated on your radar!"
+         "Understood, Sir! Processed compound debt settlement: deducted ₹2,000 for Kamran and ₹3,000 for Rahul respectively. Individual transactions have been logged and balances updated on your radar!"
+7.5. DEBT OVERPAYMENT GUARD & EXACT CAP (CRITICAL USER MANDATE):
+   - If Sir requests to repay or settle an amount GREATER than the active debt balance for that person (e.g. loan is ₹2,000 for Kamran, and Sir says "repay 8000 to kamran" or "pay 8000 to kamran"):
+     --> YOU CANNOT REPAY ₹8,000 ON A ₹2,000 LOAN!
+     --> Inspect context.debtsSummary.activeDebts for that person's exact active balance.
+     --> SET amount: EXACT ACTIVE DEBT BALANCE (e.g. 2000, NEVER 8000)!
+     --> NEVER DEDUCT THE EXCESS (e.g. the extra ₹6,000 is preserved in balance and NOT deducted)!
+     --> Emit auto_action: { "type": "settle_debt", "settleCounterparty": counterparty, "debtAmount": activeDebtAmount, "isPartial": false }.
+     --> In ca_commentary, explain gracefully with butler wit:
+         "Sir, your outstanding loan with [Counterparty] was only ₹[activeDebtAmount]. You cannot repay ₹[requestedAmount] on a ₹[activeDebtAmount] loan. I have settled the loan in full for ₹[activeDebtAmount] (100% cleared). The excess ₹[excess] has been preserved in your balance and was NOT deducted!"
+   - If Sir tries to settle a debt with someone who has NO active debt (already ₹0 or settled):
+     --> SET amount: 0! DO NOT DEDUCT ANY MONEY!
+     --> Inform Sir that no active debt exists for this person in the ledger.
 8. BORROWING MONEY & DEPOSIT INQUIRY (CRITICAL USER MANDATE):
    - When Sir borrows money or takes a loan (e.g. "borrowed 2000 from Kamran", "lent 2000 more from Kamaran", "Kamran se 2000 udhar liye", "borrowed 5000 from Rahul"):
      --> THIS IS BORROWING / PAYABLE (create_payable)!
@@ -281,24 +292,66 @@ export function isEnglishPrompt(text: string): boolean {
   return !hinglishPattern.test(clean);
 }
 
+export const isCounterpartyMatch = (name1: string, name2: string): boolean => {
+  const clean1 = (name1 || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const clean2 = (name2 || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (!clean1 || !clean2) return false;
+  if (clean1 === clean2) return true;
+  if (clean1.includes(clean2) || clean2.includes(clean1)) return true;
+
+  // Minor phonetic/vowel variations like kamaran vs kamran:
+  const noVowels1 = clean1.replace(/[aeiou]/g, '');
+  const noVowels2 = clean2.replace(/[aeiou]/g, '');
+  if (noVowels1.length >= 3 && noVowels1 === noVowels2) return true;
+
+  // Prefix match (e.g. kamr...)
+  if (clean1.length >= 4 && clean2.length >= 4) {
+    if (clean1.slice(0, 4) === clean2.slice(0, 4)) return true;
+  }
+
+  return false;
+};
+
+export const isGoalMatch = (name1: string, name2: string): boolean => {
+  const clean1 = (name1 || '').toLowerCase().trim().replace(/[^a-z0-9]/g, '');
+  const clean2 = (name2 || '').toLowerCase().trim().replace(/[^a-z0-9]/g, '');
+  if (!clean1 || !clean2) return false;
+  if (clean1 === clean2) return true;
+  if (clean1.includes(clean2) || clean2.includes(clean1)) return true;
+
+  // Common keywords matching
+  if (clean1.includes('emergency') && clean2.includes('emergency')) return true;
+  if (clean1.includes('dress') && clean2.includes('dress')) return true;
+  if (clean1.includes('mama') && clean2.includes('mama')) return true;
+  if (clean1.includes('wedding') && clean2.includes('wedding')) return true;
+  if (clean1.includes('iphone') && clean2.includes('iphone')) return true;
+
+  const noVowels1 = clean1.replace(/[aeiou]/g, '');
+  const noVowels2 = clean2.replace(/[aeiou]/g, '');
+  if (noVowels1.length >= 3 && noVowels1 === noVowels2) return true;
+
+  return false;
+};
+
 // Helper to extract multi-party debt settlements/paybacks
 export function extractMultiSettlements(prompt: string): { counterparty: string; amount: number }[] | null {
   const clean = prompt.toLowerCase().trim();
   const settlements: { counterparty: string; amount: number }[] = [];
 
-  const isSettlement = /pay\s*back|settle|settel|paid|chukta|chuka|de\s*diye|wapas\s*diye|lautaye/i.test(clean);
+  const isSettlement = /pay\s*back|repay|settle|settel|clear|paid|chukta|chuka|de\s*diye|wapas\s*diye|lautaye/i.test(clean);
   if (!isSettlement) return null;
 
-  // Normalize common typos and syntax variations
+  // Normalize common typos and syntax variations, and strip conversational preambles
   const normalized = clean
     .replace(/\btog\b/g, 'to')
     .replace(/\bsettel\b/g, 'settle')
-    .replace(/\brespectivly\b/g, 'respectively');
+    .replace(/\brespectivly\b/g, 'respectively')
+    .replace(/^(?:please\s+)?(?:clear|settle|pay\s*back|repay|paid)\s+(?:\b(?:two|2|both|multiple|several)\b\s+)?(?:\b(?:separate|different)\b\s+)?(?:\b(?:debts?|loans?|udhaar)\b\s*)?(?:of|for)?\s*/i, '');
 
   if (/respectively/i.test(normalized)) {
     // 3-part: e.g. "payback 5000 to kamran and also settle 2000 and 1000 for man 1 and 2 respectively"
     const prefixMatch = normalized.match(
-      /(?:pay\s*back|settle|paid)?\s*(\d{2,7})\s*(?:to|ko|for)?\s*([a-z0-9\s]+?)\s*(?:and also|and|aur|\,)\s*(?:settle|paid)?\s*(\d{2,7})\s*(?:and|aur|\,)\s*(\d{2,7})\s*(?:for|to|ko)?\s*([a-z0-9\s]+?)\s*(?:and|aur|\,)\s*([a-z0-9\s]+?)\s*respectively/i
+      /(?:pay\s*back|repay|settle|paid)?\s*(\d{2,7})\s*(?:to|ko|for)?\s*([a-z0-9\s]+?)\s*(?:and also|and|aur|\,)\s*(?:settle|paid)?\s*(\d{2,7})\s*(?:and|aur|\,)\s*(\d{2,7})\s*(?:for|to|ko)?\s*([a-z0-9\s]+?)\s*(?:and|aur|\,)\s*([a-z0-9\s]+?)\s*respectively/i
     );
     if (prefixMatch) {
       const amt1 = parseInt(prefixMatch[1], 10);
@@ -319,7 +372,7 @@ export function extractMultiSettlements(prompt: string): { counterparty: string;
 
     // 2-part: e.g. "settle 2000 and 1000 for man 1 and 2 respectively"
     const twoMatch = normalized.match(
-      /(?:settle|paid|pay\s*back)?\s*(\d{2,7})\s*(?:and|aur|\,)\s*(\d{2,7})\s*(?:for|to|ko)?\s*([a-z0-9\s]+?)\s*(?:and|aur|\,)\s*([a-z0-9\s]+?)\s*respectively/i
+      /(?:settle|paid|pay\s*back|repay)?\s*(\d{2,7})\s*(?:and|aur|\,)\s*(\d{2,7})\s*(?:for|to|ko)?\s*([a-z0-9\s]+?)\s*(?:and|aur|\,)\s*([a-z0-9\s]+?)\s*respectively/i
     );
     if (twoMatch) {
       const amt1 = parseInt(twoMatch[1], 10);
@@ -336,25 +389,28 @@ export function extractMultiSettlements(prompt: string): { counterparty: string;
     }
   }
 
-  // Clause based: "kamran ko 5000 aur rahul ko 2000 de diye" or "payback 5000 to kamran and 2000 to rahul"
+  // Clause based: "clear two separate debt 2000 to kamran and 3000 to rahul", "kamran ko 5000 aur rahul ko 2000 de diye"
   const clauses = normalized.split(/\b(?:and also|and|aur|\,)\b/i);
   for (const clause of clauses) {
     const trimmed = clause.trim();
-    const m1 = trimmed.match(/(\d{2,7})\s*(?:\bto\b|\bko\b|\bfor\b|\bse\b)?\s*([a-z0-9\s]+)/i);
-    const m2 = trimmed.match(/([a-z0-9\s]+?)\s*(?:\bko\b|\bto\b|\bfor\b)?\s*(\d{2,7})/i);
+    // Match: amount first (e.g. "2000 to kamran" or "payback 5000 to kamran")
+    const amtFirst = trimmed.match(/(?:(?:pay\s*back|repay|settle|paid|clear)\s+)?(?:rs\.?|inr|₹)?\s*(\d{2,7})\s*(?:to|ko|for|se)?\s*([a-z0-9\s]+)/i);
+    // Match: name first (e.g. "kamran ko 5000" or "kamran 5000")
+    const nameFirst = trimmed.match(/([a-z0-9\s]+?)\s*(?:ko|to|for)?\s*(?:rs\.?|inr|₹)?\s*(\d{2,7})/i);
 
-    if (m2 && !/^\d+$/.test(m2[1].trim())) {
-      const cleanName = m2[1].replace(/\b(?:settle|payback|pay\s*back|paid|de\s*diye|chuka\s*diye)\b/gi, '').trim();
+    if (amtFirst) {
+      const cleanName = amtFirst[2].replace(/\b(?:settle|payback|pay\s*back|repay|paid|clear|de\s*diye|chuka\s*diye)\b/gi, '').trim();
       if (cleanName && cleanName.length > 1 && !/^(?:rupee|rupees|rs|inr|me|mein|ko|to)$/i.test(cleanName)) {
-        settlements.push({ counterparty: cleanName, amount: parseInt(m2[2], 10) });
+        settlements.push({ counterparty: cleanName, amount: parseInt(amtFirst[1], 10) });
         continue;
       }
     }
 
-    if (m1 && !/^\d+$/.test(m1[2].trim())) {
-      const cleanName = m1[2].replace(/\b(?:settle|payback|pay\s*back|paid|de\s*diye|chuka\s*diye)\b/gi, '').trim();
+    if (nameFirst) {
+      const cleanName = nameFirst[1].replace(/\b(?:settle|payback|pay\s*back|repay|paid|clear|de\s*diye|chuka\s*diye)\b/gi, '').trim();
       if (cleanName && cleanName.length > 1 && !/^(?:rupee|rupees|rs|inr|me|mein|ko|to)$/i.test(cleanName)) {
-        settlements.push({ counterparty: cleanName, amount: parseInt(m1[1], 10) });
+        settlements.push({ counterparty: cleanName, amount: parseInt(nameFirst[2], 10) });
+        continue;
       }
     }
   }
@@ -433,26 +489,60 @@ export function parseExpenseWithRules(
     };
   }
 
-  // 0.25 Multi-Party Debt Settlements / Paybacks (e.g. "payback 5000 to kamran and also settle 2000 and 1000 for man 1 and 2 respectively")
+  // 0.25 Multi-Party Debt Settlements / Paybacks (e.g. "clear two separate debt 2000 to kamran and 3000 to rahul", "payback 5000 to kamran and also settle 2000 and 1000 for man 1 and 2 respectively")
   const isMultiSettlementCandidate =
-    /pay\s*back|settle|settel|paid|chukta|chuka|de\s*diye|wapas\s*diye|lautaye/i.test(cleanPrompt) &&
+    /pay\s*back|repay|settle|settel|clear|paid|chukta|chuka|de\s*diye|wapas\s*diye|lautaye/i.test(cleanPrompt) &&
     (/respectively|respectivly/i.test(cleanPrompt) ||
       (cleanPrompt.match(/\b(?:and also|and|aur|\,)\b/g) || []).length >= 1);
 
   if (isMultiSettlementCandidate) {
-    const multiSettlements = extractMultiSettlements(prompt);
-    if (multiSettlements && multiSettlements.length > 1) {
+    const rawSettlements = extractMultiSettlements(prompt);
+    if (rawSettlements && rawSettlements.length > 1) {
+      const overpaymentWarnings: string[] = [];
+      const multiSettlements: { counterparty: string; amount: number; isPartial: boolean }[] = [];
+
+      for (const s of rawSettlements) {
+        const activeDebt = context?.debtsSummary?.activeDebts?.find(
+          (d) => d.debtType === 'owed_by_user' && isCounterpartyMatch(d.title, s.counterparty)
+        );
+
+        let finalAmt = s.amount;
+        let isPartial = false;
+
+        if (activeDebt) {
+          if (s.amount > activeDebt.amount) {
+            finalAmt = activeDebt.amount;
+            const excess = s.amount - activeDebt.amount;
+            isPartial = false;
+            overpaymentWarnings.push(
+              isEnglish
+                ? `Capped ${s.counterparty} repayment at ₹${activeDebt.amount.toLocaleString()} (100% cleared; excess ₹${excess.toLocaleString()} preserved)`
+                : `${s.counterparty} ka karza sirf ₹${activeDebt.amount.toLocaleString()} tha, isliye ₹${activeDebt.amount.toLocaleString()} par cap kiya (excess ₹${excess.toLocaleString()} bacha liya)`
+            );
+          } else if (s.amount === activeDebt.amount) {
+            isPartial = false;
+          } else {
+            isPartial = true;
+          }
+        }
+        multiSettlements.push({ counterparty: s.counterparty, amount: finalAmt, isPartial });
+      }
+
       const totalPay = multiSettlements.reduce((sum, s) => sum + s.amount, 0);
       const autoActions: AutoAction[] = multiSettlements.map((s) => ({
         type: 'settle_debt' as const,
         settleCounterparty: s.counterparty,
         debtAmount: s.amount,
-        isPartial: true,
+        isPartial: s.isPartial,
       }));
 
       const summaryDetails = multiSettlements
         .map((s) => `₹${s.amount.toLocaleString()} for ${s.counterparty}`)
         .join(', ');
+
+      const overpayNote = overpaymentWarnings.length > 0
+        ? `\n\n🛡️ Note on Overpayment Guard:\n• ${overpaymentWarnings.join('\n• ')}`
+        : '';
 
       return {
         merchant: 'Multiple Debt Settlements',
@@ -465,8 +555,8 @@ export function parseExpenseWithRules(
         remainingSafeToSpend: Math.max(0, dailyLimit - spentToday),
         sentiment: 'praise',
         caCommentary: isEnglish
-          ? `Right away, Sir! Processed multiple debt settlements: deducted ${summaryDetails} respectively (Total: ₹${totalPay.toLocaleString()}). All individual balances have been updated and your daily spend allowance remains completely protected!`
-          : `Samajh gaya, Boss! Multiple debt settlements process kar diye hain: ${summaryDetails} respectively deduct kar diye gaye hain (Total: ₹${totalPay.toLocaleString()}). Ledger aur radar update ho chuka hai!`,
+          ? `Right away, Sir! Processed multiple debt settlements: deducted ${summaryDetails} respectively (Total: ₹${totalPay.toLocaleString()}).${overpayNote}\n\nSeparate transaction records have been entered into your ledger, and your daily spend allowance remains completely protected!`
+          : `Samajh gaya, Boss! Multiple debt settlements process kar diye hain: ${summaryDetails} respectively deduct kar diye gaye hain (Total: ₹${totalPay.toLocaleString()}).${overpayNote}\n\nSeparate ledger entries log ho chuki hain aur radar update ho chuka hai!`,
         tomorrowAdjustedCap: dailyLimit,
         autoAction: autoActions[0],
         autoActions,
@@ -474,31 +564,118 @@ export function parseExpenseWithRules(
     }
   }
 
-  // 0.3 Partial Debt Repayment (e.g. "partially pay a debt of 20000 to 5000", "i paid 5000 of 20000 debt to rahul", "roommate ko 20000 me se 5000 de diye")
-  const isPartialDebtPay =
-    (cleanPrompt.includes('debt') || cleanPrompt.includes('udhaar') || cleanPrompt.includes('karza') || cleanPrompt.includes('loan') || cleanPrompt.includes('dene the') || cleanPrompt.includes('de diye')) &&
-    (cleanPrompt.includes('partial') || cleanPrompt.includes('me se') || cleanPrompt.includes('mein se') || cleanPrompt.includes('paid') || cleanPrompt.includes('de diye') || cleanPrompt.includes('baki'));
+  // 0.3 Single Debt Repayment & Settlement with Overpayment Guard
+  // (e.g. "repay 8000 to kamran", "kamran ko 8000 de diye", "partially pay a debt of 20000 to 5000", "i paid 5000 of 20000 debt to rahul", "settle debt 2000 to kamran")
+  const isSingleDebtSettlement =
+    !isMultiSettlementCandidate &&
+    (cleanPrompt.includes('repay') ||
+     cleanPrompt.includes('payback') ||
+     cleanPrompt.includes('pay back') ||
+     cleanPrompt.includes('settle') ||
+     cleanPrompt.includes('settel') ||
+     cleanPrompt.includes('clear debt') ||
+     cleanPrompt.includes('karza wapas') ||
+     cleanPrompt.includes('udhar wapas') ||
+     cleanPrompt.includes('udhaar wapas') ||
+     cleanPrompt.includes('chuka') ||
+     cleanPrompt.includes('chukta') ||
+     ((cleanPrompt.includes('debt') || cleanPrompt.includes('udhaar') || cleanPrompt.includes('karza') || cleanPrompt.includes('loan')) &&
+      (cleanPrompt.includes('partial') || cleanPrompt.includes('me se') || cleanPrompt.includes('mein se') || cleanPrompt.includes('paid') || cleanPrompt.includes('pay') || cleanPrompt.includes('de diye') || cleanPrompt.includes('baki') || cleanPrompt.includes('dene the') || cleanPrompt.includes('wapas'))));
 
-  if (isPartialDebtPay) {
-    const numbers = (prompt.match(/(\d{3,6})/g) || []).map((n) => parseInt(n, 10));
-    let payAmount = 5000;
-    let originalDebt = 20000;
+  if (isSingleDebtSettlement) {
+    const numbers = (prompt.match(/(\d{2,7})/g) || []).map((n) => parseInt(n, 10));
+    let requestedAmount = 5000;
     if (numbers.length >= 2) {
-      originalDebt = Math.max(...numbers);
-      payAmount = Math.min(...numbers);
+      requestedAmount = Math.min(...numbers);
     } else if (numbers.length === 1) {
-      payAmount = numbers[0];
+      requestedAmount = numbers[0];
     }
-    const remaining = Math.max(0, originalDebt - payAmount);
 
-    let counterparty = 'Roommate';
-    if (cleanPrompt.includes('rahul')) counterparty = 'Rahul';
-    else if (cleanPrompt.includes('sharma')) counterparty = 'Sharma Ji';
-    else if (cleanPrompt.includes('friend') || cleanPrompt.includes('dost')) counterparty = 'Friend';
+    // Identify counterparty
+    let counterparty = '';
+    if (context?.debtsSummary?.activeDebts) {
+      const found = context.debtsSummary.activeDebts.find((d) => isCounterpartyMatch(d.title, cleanPrompt));
+      if (found) counterparty = found.title;
+    }
+
+    if (!counterparty) {
+      const matchTo = prompt.match(/(?:to|ko|for|se)\s+([a-zA-Z0-9]+)/i);
+      if (matchTo && !['the', 'my', 'his', 'her', 'account', 'me', 'mein', 'him', 'them'].includes(matchTo[1].toLowerCase())) {
+        counterparty = matchTo[1].trim();
+      }
+    }
+    if (!counterparty) {
+      if (/kamaran|kamran/i.test(prompt)) counterparty = 'Kamran';
+      else if (/rahul/i.test(prompt)) counterparty = 'Rahul';
+      else if (/sharma/i.test(prompt)) counterparty = 'Sharma Ji';
+      else if (/roommate/i.test(prompt)) counterparty = 'Roommate';
+      else counterparty = 'Friend';
+    } else {
+      if (/kamaran|kamran/i.test(counterparty)) counterparty = 'Kamran';
+      else counterparty = counterparty.charAt(0).toUpperCase() + counterparty.slice(1);
+    }
+
+    // Inspect active debts in context
+    const activeDebt = context?.debtsSummary?.activeDebts?.find(
+      (d) => d.debtType === 'owed_by_user' && isCounterpartyMatch(d.title, counterparty)
+    );
+
+    // Edge Case: Active debt check
+    if (context?.debtsSummary?.activeDebts && (!activeDebt || activeDebt.amount <= 0)) {
+      return {
+        merchant: `Debt Settlement - ${counterparty}`,
+        amount: 0,
+        category: 'Debt Repayment',
+        transactionType: 'transfer',
+        isDiscretionary: false,
+        isOverLimit: false,
+        exceededBy: 0,
+        remainingSafeToSpend: Math.max(0, dailyLimit - spentToday),
+        sentiment: 'praise',
+        caCommentary: isEnglish
+          ? `Sir, according to your liabilities ledger, you do not have any active debt with ${counterparty} (outstanding balance is ₹0). No funds have been deducted from your balance.`
+          : `Boss, aapke ledger ke mutabiq ${counterparty} par aapka koi active karza nahi hai (balance ₹0 hai). Aapke account se koi paisa deduct nahi kiya gaya hai.`,
+        tomorrowAdjustedCap: dailyLimit,
+      };
+    }
+
+    const outstandingDebt = activeDebt ? activeDebt.amount : (numbers.length >= 2 ? Math.max(...numbers) : requestedAmount);
+
+    // Edge Case: Debt Overpayment Guard
+    if (requestedAmount > outstandingDebt) {
+      const actualPay = outstandingDebt;
+      const excess = requestedAmount - actualPay;
+
+      return {
+        merchant: `${counterparty} (Debt Settlement)`,
+        amount: actualPay,
+        category: 'Debt Repayment',
+        transactionType: 'expense',
+        isDiscretionary: false,
+        isOverLimit: false,
+        exceededBy: 0,
+        remainingSafeToSpend: Math.max(0, dailyLimit - spentToday),
+        sentiment: 'praise',
+        caCommentary: isEnglish
+          ? `Sir, your outstanding debt with ${counterparty} was only ₹${outstandingDebt.toLocaleString()}. You cannot repay ₹${requestedAmount.toLocaleString()} on a ₹${outstandingDebt.toLocaleString()} loan. I have settled the full balance of ₹${actualPay.toLocaleString()} (debt 100% cleared). The excess ₹${excess.toLocaleString()} has been preserved in your balance and was NOT deducted.`
+          : `Boss, ${counterparty} ka baki karza sirf ₹${outstandingDebt.toLocaleString()} tha. Aap ₹${outstandingDebt.toLocaleString()} ke loan par ₹${requestedAmount.toLocaleString()} repay nahi kar sakte. Maine full ₹${actualPay.toLocaleString()} settle kar diya hai (karza 100% clear). Baki bache ₹${excess.toLocaleString()} aapke balance mein surakshit hain aur deduct nahi hue!`,
+        tomorrowAdjustedCap: dailyLimit,
+        autoAction: {
+          type: 'settle_debt',
+          settleCounterparty: counterparty,
+          debtAmount: actualPay,
+          isPartial: false,
+        },
+      };
+    }
+
+    // Normal or partial payment
+    const isPartial = requestedAmount < outstandingDebt;
+    const remaining = Math.max(0, outstandingDebt - requestedAmount);
 
     return {
-      merchant: `${counterparty} (Partial Debt Payment)`,
-      amount: payAmount,
+      merchant: `${counterparty} (${isPartial ? 'Partial Debt Payment' : 'Debt Settlement'})`,
+      amount: requestedAmount,
       category: 'Debt Repayment',
       transactionType: 'expense',
       isDiscretionary: false,
@@ -507,14 +684,18 @@ export function parseExpenseWithRules(
       remainingSafeToSpend: Math.max(0, dailyLimit - spentToday),
       sentiment: 'praise',
       caCommentary: isEnglish
-        ? `Understood, Sir! ₹${payAmount.toLocaleString()} payment towards your debt to ${counterparty} has been logged in your ledger. The remaining balance of ₹${remaining.toLocaleString()} is still tracked on your radar!`
-        : `Samajh gaya, Boss! ${counterparty} ke debt mein se ₹${payAmount.toLocaleString()} payment ledger mein log kar di hai. Baki bacha ₹${remaining.toLocaleString()} balance abhi bhi radar par active hai!`,
+        ? (isPartial
+            ? `Understood, Sir! ₹${requestedAmount.toLocaleString()} payment towards your debt to ${counterparty} has been logged in your ledger. The remaining balance of ₹${remaining.toLocaleString()} is still tracked on your radar!`
+            : `Right away, Sir! Settled full debt of ₹${requestedAmount.toLocaleString()} to ${counterparty}. Debt is 100% cleared on your radar!`)
+        : (isPartial
+            ? `Samajh gaya, Boss! ${counterparty} ke debt mein se ₹${requestedAmount.toLocaleString()} payment ledger mein log kar di hai. Baki bacha ₹${remaining.toLocaleString()} balance abhi bhi radar par active hai!`
+            : `Right away, Boss! ${counterparty} ka poora ₹${requestedAmount.toLocaleString()} karza settle kar diya hai. Karza 100% khatam ho chuka hai!`),
       tomorrowAdjustedCap: dailyLimit,
       autoAction: {
         type: 'settle_debt',
         settleCounterparty: counterparty,
-        debtAmount: payAmount,
-        isPartial: true,
+        debtAmount: requestedAmount,
+        isPartial,
       },
     };
   }
@@ -1244,6 +1425,53 @@ export function parseExpenseWithRules(
           : 'Savings Goal');
 
     const remainingInGoal = matchedGoal ? Math.max(0, matchedGoal.currentAmount - withdrawAmount) : 2000;
+
+    // Edge Case: Goal Over-withdrawal Guard
+    if (matchedGoal) {
+      if (matchedGoal.currentAmount <= 0) {
+        return {
+          merchant: goalName,
+          amount: 0,
+          category: 'Savings & Goals',
+          transactionType: 'transfer',
+          isDiscretionary: false,
+          isOverLimit: false,
+          exceededBy: 0,
+          remainingSafeToSpend: Math.max(0, dailyLimit - spentToday),
+          sentiment: 'praise',
+          caCommentary: isEnglish
+            ? `Sir, your '${goalName}' vault currently has a ₹0 balance. No funds could be retrieved.`
+            : `Boss, aapke '${goalName}' vault mein abhi ₹0 balance hai. Koi paisa withdraw nahi kiya ja sakta.`,
+          tomorrowAdjustedCap: dailyLimit,
+        };
+      }
+
+      if (withdrawAmount > matchedGoal.currentAmount) {
+        const actualWithdraw = matchedGoal.currentAmount;
+        return {
+          merchant: goalName,
+          amount: actualWithdraw,
+          category: 'Savings & Goals',
+          transactionType: 'income',
+          isDiscretionary: false,
+          isOverLimit: false,
+          exceededBy: 0,
+          remainingSafeToSpend: Math.max(0, dailyLimit - spentToday),
+          sentiment: 'praise',
+          caCommentary: isEnglish
+            ? `Sir, your '${goalName}' vault only contains ₹${actualWithdraw.toLocaleString()}. You cannot withdraw ₹${withdrawAmount.toLocaleString()}. I have retrieved the entire available balance of ₹${actualWithdraw.toLocaleString()} into your checking account (+₹${actualWithdraw.toLocaleString()}). Vault balance now stands at ₹0.`
+            : `Boss, aapke '${goalName}' vault mein sirf ₹${actualWithdraw.toLocaleString()} bache the. Aap ₹${withdrawAmount.toLocaleString()} withdraw nahi kar sakte. Maine poore ₹${actualWithdraw.toLocaleString()} aapke account mein transfer kar diye hain (+₹${actualWithdraw.toLocaleString()}). Ab vault balance ₹0 hai.`,
+          tomorrowAdjustedCap: dailyLimit,
+          autoAction: {
+            type: 'withdraw_goal',
+            goalWithdrawal: {
+              goalName,
+              amount: actualWithdraw,
+            },
+          },
+        };
+      }
+    }
 
     return {
       merchant: goalName,

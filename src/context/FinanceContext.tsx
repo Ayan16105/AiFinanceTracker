@@ -474,21 +474,21 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
 
   const settleDebt = (debtId: string, autoLogTransaction: boolean = true, partialAmount?: number) => {
     const debt = debts.find((d) => d.id === debtId);
-    if (!debt) return;
+    if (!debt || debt.isSettled || debt.amount <= 0) return;
 
-    const isPartial = typeof partialAmount === 'number' && partialAmount > 0 && partialAmount < debt.amount;
-    const paymentAmount = isPartial ? partialAmount : debt.amount;
-    const remainingAmount = isPartial ? debt.amount - partialAmount : 0;
+    const paymentAmount = typeof partialAmount === 'number' && partialAmount > 0 ? Math.min(partialAmount, debt.amount) : debt.amount;
+    const isPartial = paymentAmount < debt.amount;
+    const remainingAmount = Math.max(0, debt.amount - paymentAmount);
     const now = new Date();
     const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
     const updatedDebt: Debt = {
       ...debt,
       amount: remainingAmount,
-      isSettled: !isPartial,
+      isSettled: remainingAmount === 0,
       notes: isPartial
         ? `${debt.notes ? debt.notes + ' | ' : ''}Paid ₹${paymentAmount.toLocaleString()} on ${todayStr} (Remaining: ₹${remainingAmount.toLocaleString()})`
-        : debt.notes,
+        : (debt.notes ? `${debt.notes} | Settled in full on ${todayStr}` : `Settled in full on ${todayStr}`),
     };
 
     setDebts((prev) =>
@@ -1308,10 +1308,16 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
       })
     );
 
-    // 2. Add New Transaction to Journal (only if amount > 0, NOT a simulation, and NOT handled as multi-settlement)
-    const isMultiSettlement = Boolean(result.autoActions && result.autoActions.length > 1);
+    // 3. Execute J.A.R.V.I.S. Actions (Full App Navigation & Control)
+    const actionsToExecute: AutoAction[] = (result.autoActions && result.autoActions.length > 0)
+      ? result.autoActions
+      : (result.autoAction ? [result.autoAction] : []);
 
-    if (result.amount > 0 && !isHypotheticalPrompt && !isMultiSettlement) {
+    const settleActions = actionsToExecute.filter((a) => a.type === 'settle_debt');
+    const hasSettleActions = settleActions.length > 0;
+
+    // 2. Add New Transaction to Journal (only if amount > 0, NOT a simulation, and NO debt settlements handled individually)
+    if (result.amount > 0 && !isHypotheticalPrompt && !hasSettleActions) {
       const newTx: Transaction = {
         id: `tx-${Date.now()}`,
         userId: userSettings.userId,
@@ -1343,30 +1349,19 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
       }
     }
 
-    // 3. Execute J.A.R.V.I.S. Actions (Full App Navigation & Control)
-    const actionsToExecute: AutoAction[] = (result.autoActions && result.autoActions.length > 0)
-      ? result.autoActions
-      : (result.autoAction ? [result.autoAction] : []);
-
-    // 3.1 Handle settle_debt actions (single or batch multi-debt settlements)
-    const settleActions = actionsToExecute.filter((a) => a.type === 'settle_debt');
-    if (settleActions.length > 0) {
+    // 3.1 Handle settle_debt actions (creates SEPARATE, DISTINCT transactions for each settled debt)
+    if (hasSettleActions) {
       const newTxList: Transaction[] = [];
       setDebts((prevDebts) => {
         const currentList = [...prevDebts];
         for (let i = 0; i < settleActions.length; i++) {
           const act = settleActions[i];
           const query = (act.settleCounterparty || act.debtTitle || '').toLowerCase().trim();
-          const payAmount = act.debtAmount || (settleActions.length === 1 && result.amount > 0 ? result.amount : undefined);
+          const payAmount = act.debtAmount;
 
           const idx = currentList.findIndex((d) => {
             if (d.isSettled) return false;
-            const t = d.title.toLowerCase();
-            if (!query) return true;
-            if (t === query || t.includes(query) || query.includes(t)) return true;
-            const tokens = query.split(/\s+/).filter((tok) => tok.length > 1);
-            if (tokens.length > 0 && tokens.every((tok) => t.includes(tok))) return true;
-            return false;
+            return isCounterpartyMatch(d.title, query);
           });
 
           if (idx !== -1) {
@@ -1387,29 +1382,29 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
             currentList[idx] = updatedDebt;
             SupabaseService.syncDebtUpsert(updatedDebt);
 
-            if (settleActions.length > 1) {
-              const txTime = new Date();
-              const newTx: Transaction = {
-                id: `tx-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 6)}`,
-                userId: userSettings.userId,
-                rawPrompt: `Debt Payment: ₹${actualPay.toLocaleString()} for ${debt.title}`,
-                merchant: debt.title,
-                amount: actualPay,
-                category: debt.debtType === 'owed_to_user' ? 'Debt Recovery / Refund' : 'Debt Repayment',
-                transactionType: debt.debtType === 'owed_to_user' ? 'income' : 'expense',
-                isDiscretionary: false,
-                isOverLimit: false,
-                overLimitAmount: 0,
-                date: todayStr,
-                time: txTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-                createdAt: txTime.toISOString(),
-              };
-              newTxList.push(newTx);
-              SupabaseService.syncTransactionInsert(newTx);
-            }
+            const txTime = new Date();
+            const newTx: Transaction = {
+              id: `tx-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 6)}`,
+              userId: userSettings.userId,
+              rawPrompt: isPartial
+                ? `Partial Debt Payment: ₹${actualPay.toLocaleString()} for ${debt.title}`
+                : `Debt Payment: ₹${actualPay.toLocaleString()} for ${debt.title}`,
+              merchant: debt.title,
+              amount: actualPay,
+              category: debt.debtType === 'owed_to_user' ? 'Debt Recovery / Refund' : 'Debt Repayment',
+              transactionType: debt.debtType === 'owed_to_user' ? 'income' : 'expense',
+              isDiscretionary: false,
+              isOverLimit: false,
+              overLimitAmount: 0,
+              date: todayStr,
+              time: txTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+              createdAt: txTime.toISOString(),
+            };
+            newTxList.push(newTx);
+            SupabaseService.syncTransactionInsert(newTx);
           } else {
-            // Debt counterparty not yet in active list, still record individual transaction if multiple settlements
-            if (settleActions.length > 1 && typeof payAmount === 'number' && payAmount > 0) {
+            // Debt counterparty not yet in active list, still record separate individual transaction if amount specified
+            if (typeof payAmount === 'number' && payAmount > 0) {
               const txTime = new Date();
               const counterpartyName = query ? (query.charAt(0).toUpperCase() + query.slice(1)) : 'Debt Repayment';
               const newTx: Transaction = {
