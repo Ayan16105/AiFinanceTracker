@@ -936,7 +936,7 @@ export default function LedgerChat() {
                     )}
 
                     {/* Conversational text / Advice / Command confirmation */}
-                    {Boolean(!isScold && (!msg.metadata?.amount || msg.metadata.amount === 0) && !msg.metadata?.bankAlertData) && (
+                    {Boolean((!msg.metadata?.amount || msg.metadata.amount === 0) && !msg.metadata?.bankAlertData) && (
                       <div className="p-4 sm:p-5 rounded-2xl bg-white rounded-tl-xs shadow-xs border border-slate-100 flex flex-col gap-3">
                         <div className="text-sm leading-relaxed text-[#0b1c30] whitespace-pre-line">
                           {msg.text}
@@ -1202,12 +1202,14 @@ export default function LedgerChat() {
                       </div>
                     )}
 
-                    {/* Scold Red Card */}
-                    {isScold && (
+                    {/* Scold Red Card (Only for actual transactions with amount > 0 that breached a cap) */}
+                    {Boolean(isScold && (msg.metadata?.amount ?? 0) > 0) && (
                       <div className="p-4 sm:p-5 rounded-2xl bg-rose-50 rounded-tl-xs shadow-sm border border-rose-200 flex flex-col gap-3">
                         <div className="flex items-center justify-between">
                           <div>
-                            <span className="font-bold text-sm text-[#ba1a1a]">Discretionary Cap Breached</span>
+                            <span className="font-bold text-sm text-[#ba1a1a]">
+                              {msg.metadata?.breachCode === 'HOUSEHOLD-BREACH' ? 'Household Budget Overrun' : 'Discretionary Cap Breached'}
+                            </span>
                             <span className="block text-xs text-[#76777d]">{msg.metadata?.merchant || 'Transaction'}</span>
                           </div>
                           <span className="font-mono-num font-bold text-lg text-[#ba1a1a]">

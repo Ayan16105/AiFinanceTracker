@@ -1339,6 +1339,13 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
       }
     }
 
+    // Inquiries and conversational prompts with amount === 0 must never be flagged as overLimit or breachCode
+    if (result.amount === 0) {
+      result.isOverLimit = false;
+      result.exceededBy = 0;
+      result.breachCode = undefined;
+    }
+
     const isHypotheticalPrompt =
       prompt.toLowerCase().includes('what if') ||
       prompt.toLowerCase().includes('suppose') ||
