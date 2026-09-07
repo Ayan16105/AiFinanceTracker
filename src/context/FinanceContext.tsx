@@ -11,6 +11,7 @@ import {
   ChatSession,
   ParseExpenseResult,
   AutoAction,
+  BorrowDepositPrompt,
 } from '@/types';
 import {
   initialUserSettings,
@@ -58,6 +59,8 @@ interface FinanceContextType {
     description?: string;
     messageId?: string;
   }) => void;
+  confirmBorrowDeposit: (amount: number, counterparty: string, messageId?: string) => void;
+  dismissBorrowDeposit: (messageId: string) => void;
   spentToday: number;
   safeToSpendRemaining: number;
   todayDeficit: number;
@@ -88,6 +91,47 @@ interface FinanceContextType {
   openSettings: () => void;
   closeSettings: () => void;
 }
+
+export const isCounterpartyMatch = (name1: string, name2: string): boolean => {
+  const clean1 = (name1 || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const clean2 = (name2 || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (!clean1 || !clean2) return false;
+  if (clean1 === clean2) return true;
+  if (clean1.includes(clean2) || clean2.includes(clean1)) return true;
+
+  // Handle minor phonetic/vowel variations like kamaran vs kamran:
+  const noVowels1 = clean1.replace(/[aeiou]/g, '');
+  const noVowels2 = clean2.replace(/[aeiou]/g, '');
+  if (noVowels1.length >= 3 && noVowels1 === noVowels2) return true;
+
+  // Prefix match (e.g. kamr...)
+  if (clean1.length >= 4 && clean2.length >= 4) {
+    if (clean1.slice(0, 4) === clean2.slice(0, 4)) return true;
+  }
+
+  return false;
+};
+
+export const isGoalMatch = (name1: string, name2: string): boolean => {
+  const clean1 = (name1 || '').toLowerCase().trim().replace(/[^a-z0-9]/g, '');
+  const clean2 = (name2 || '').toLowerCase().trim().replace(/[^a-z0-9]/g, '');
+  if (!clean1 || !clean2) return false;
+  if (clean1 === clean2) return true;
+  if (clean1.includes(clean2) || clean2.includes(clean1)) return true;
+
+  // Common keywords matching
+  if (clean1.includes('emergency') && clean2.includes('emergency')) return true;
+  if (clean1.includes('dress') && clean2.includes('dress')) return true;
+  if (clean1.includes('mama') && clean2.includes('mama')) return true;
+  if (clean1.includes('wedding') && clean2.includes('wedding')) return true;
+  if (clean1.includes('iphone') && clean2.includes('iphone')) return true;
+
+  const noVowels1 = clean1.replace(/[aeiou]/g, '');
+  const noVowels2 = clean2.replace(/[aeiou]/g, '');
+  if (noVowels1.length >= 3 && noVowels1 === noVowels2) return true;
+
+  return false;
+};
 
 const FinanceContext = createContext<FinanceContextType | undefined>(undefined);
 
@@ -220,9 +264,54 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
           }
           if (cloudData.transactions !== undefined) setTransactions(cloudData.transactions);
           if (cloudData.goals !== undefined) {
-            setGoals(cloudData.goals);
+            // Deduplicate goals so only ONE goal exists per name
+            const deduplicatedGoals: SavingsGoal[] = [];
+            const seenGoals = new Map<string, SavingsGoal>();
+            const duplicateGoalIdsToDelete: string[] = [];
+
+            for (const g of cloudData.goals) {
+              const matchedKey = Array.from(seenGoals.keys()).find((k) => isGoalMatch(k, g.name));
+              if (matchedKey) {
+                const existing = seenGoals.get(matchedKey)!;
+                existing.currentAmount += g.currentAmount;
+                existing.targetAmount = Math.max(existing.targetAmount, g.targetAmount);
+                duplicateGoalIdsToDelete.push(g.id);
+              } else {
+                const copy = { ...g };
+                seenGoals.set(g.name, copy);
+                deduplicatedGoals.push(copy);
+              }
+            }
+            duplicateGoalIdsToDelete.forEach((id) => SupabaseService.syncGoalDelete(id));
+            setGoals(deduplicatedGoals);
           }
-          if (cloudData.debts !== undefined) setDebts(cloudData.debts);
+          if (cloudData.debts !== undefined) {
+            // Deduplicate active debts so only ONE record exists per person
+            const deduplicatedDebts: Debt[] = [];
+            const seenDebts = new Map<string, Debt>();
+            const duplicateDebtIdsToDelete: string[] = [];
+
+            for (const d of cloudData.debts) {
+              if (d.isSettled) {
+                deduplicatedDebts.push(d);
+                continue;
+              }
+              const matchedKey = Array.from(seenDebts.keys()).find(
+                (k) => k.startsWith(d.debtType + ':') && isCounterpartyMatch(k.split(':')[1], d.title)
+              );
+              if (matchedKey) {
+                const existing = seenDebts.get(matchedKey)!;
+                existing.amount += d.amount;
+                duplicateDebtIdsToDelete.push(d.id);
+              } else {
+                const copy = { ...d };
+                seenDebts.set(`${d.debtType}:${d.title}`, copy);
+                deduplicatedDebts.push(copy);
+              }
+            }
+            duplicateDebtIdsToDelete.forEach((id) => SupabaseService.syncDebtDelete(id));
+            setDebts(deduplicatedDebts);
+          }
           if (cloudData.chatMessages !== undefined && cloudData.chatMessages.length > 0) {
             setChatMessages(cloudData.chatMessages);
             try {
@@ -551,6 +640,21 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
   };
 
   const addGoal = (goalData: Omit<SavingsGoal, 'id' | 'userId'>) => {
+    // Look if a goal with matching name already exists
+    const existing = goals.find((g) => isGoalMatch(g.name, goalData.name));
+    if (existing) {
+      const updatedGoal: SavingsGoal = {
+        ...existing,
+        targetAmount: Math.max(existing.targetAmount, goalData.targetAmount),
+        currentAmount: existing.currentAmount + (goalData.currentAmount || 0),
+        monthlyAllocation: goalData.monthlyAllocation || existing.monthlyAllocation,
+        targetDate: goalData.targetDate || existing.targetDate,
+      };
+      setGoals((prev) => prev.map((g) => (g.id === existing.id ? updatedGoal : g)));
+      SupabaseService.syncGoalUpsert(updatedGoal);
+      return;
+    }
+
     const newGoal: SavingsGoal = {
       ...goalData,
       id: `goal-${Date.now()}`,
@@ -587,6 +691,22 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
   };
 
   const addDebt = (debtData: Omit<Debt, 'id' | 'userId'>) => {
+    // Look if active debt for same counterparty & debtType exists
+    const existing = debts.find(
+      (d) => !d.isSettled && d.debtType === debtData.debtType && isCounterpartyMatch(d.title, debtData.title)
+    );
+    if (existing) {
+      const updatedDebt: Debt = {
+        ...existing,
+        amount: existing.amount + debtData.amount,
+        notes: `${existing.notes ? existing.notes + ' | ' : ''}Added ₹${debtData.amount.toLocaleString()} on ${todayStr}`,
+        dueDate: debtData.dueDate || existing.dueDate,
+      };
+      setDebts((prev) => prev.map((d) => (d.id === existing.id ? updatedDebt : d)));
+      SupabaseService.syncDebtUpsert(updatedDebt);
+      return;
+    }
+
     const newDebt: Debt = {
       ...debtData,
       id: `debt-${Date.now()}`,
@@ -594,6 +714,89 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
     };
     setDebts((prev) => [...prev, newDebt]);
     SupabaseService.syncDebtUpsert(newDebt);
+  };
+
+  const confirmBorrowDeposit = (amount: number, counterparty: string, messageId?: string) => {
+    const now = new Date();
+    const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+    const newTx: Transaction = {
+      id: `tx-borrow-${Date.now()}`,
+      userId: userSettings.userId,
+      rawPrompt: `Borrowed Funds Deposit: ₹${amount.toLocaleString()} from ${counterparty}`,
+      merchant: `Borrowed from ${counterparty}`,
+      amount: Math.abs(amount),
+      category: 'Loan / Inflow',
+      transactionType: 'income',
+      isDiscretionary: false,
+      isOverLimit: false,
+      overLimitAmount: 0,
+      date: todayStr,
+      time: timeStr,
+      createdAt: now.toISOString(),
+    };
+
+    setTransactions((prev) => [newTx, ...prev]);
+    SupabaseService.syncTransactionInsert(newTx);
+
+    // Update message metadata to mark confirmed
+    setChatMessages((prev) =>
+      prev.map((m) => {
+        if ((messageId && m.id === messageId) || (!messageId && m.metadata?.borrowDepositPrompt && !m.metadata.borrowDepositPrompt.confirmed)) {
+          const updatedMeta = {
+            ...m.metadata,
+            borrowDepositPrompt: {
+              ...(m.metadata?.borrowDepositPrompt || { amount, counterparty }),
+              confirmed: true,
+            },
+          };
+          const updatedMsg = { ...m, metadata: updatedMeta };
+          SupabaseService.syncChatMessage(updatedMsg);
+          return updatedMsg;
+        }
+        return m;
+      })
+    );
+
+    // Add J.A.R.V.I.S. acknowledgement
+    const ackMsg: ChatMessage = {
+      id: `ai-borrow-ack-${Date.now()}`,
+      sessionId: currentSessionId,
+      sender: 'ai',
+      text: `Confirmed, Sir! ₹${amount.toLocaleString()} borrowed from ${counterparty} has been successfully deposited into your Current Liquid Balance.\n\nYour liquid balance has been credited, and the ₹${amount.toLocaleString()} liability remains logged on your radar.`,
+      sentiment: 'praise',
+      timestamp: timeStr,
+      metadata: {
+        sessionId: currentSessionId,
+        amount,
+        merchant: `Borrowed from ${counterparty}`,
+        category: 'Loan / Inflow',
+        transactionType: 'income',
+      },
+    };
+    setChatMessages((prev) => [...prev, ackMsg]);
+    SupabaseService.syncChatMessage(ackMsg);
+  };
+
+  const dismissBorrowDeposit = (messageId: string) => {
+    setChatMessages((prev) =>
+      prev.map((m) => {
+        if (m.id === messageId && m.metadata?.borrowDepositPrompt) {
+          const updatedMeta = {
+            ...m.metadata,
+            borrowDepositPrompt: {
+              ...m.metadata.borrowDepositPrompt,
+              confirmed: true,
+              dismissed: true,
+            },
+          };
+          const updatedMsg = { ...m, metadata: updatedMeta };
+          SupabaseService.syncChatMessage(updatedMsg);
+          return updatedMsg;
+        }
+        return m;
+      })
+    );
   };
 
   const deleteDebt = (debtId: string) => {
@@ -921,6 +1124,35 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
     setChatMessages((prev) => [...prev, userMsg]);
     SupabaseService.syncChatMessage(userMsg);
 
+    // Conversational confirmation to deposit borrowed funds into current balance
+    const cleanLowerPrompt = prompt.toLowerCase().trim();
+    const isDepositConfirmation =
+      (cleanLowerPrompt.includes('deposit') || cleanLowerPrompt.includes('daal do') || cleanLowerPrompt.includes('dal do') || cleanLowerPrompt.includes('add kardo') || cleanLowerPrompt === 'yes' || cleanLowerPrompt === 'haa' || cleanLowerPrompt === 'ha' || cleanLowerPrompt.startsWith('yes ') || cleanLowerPrompt.startsWith('haa ')) &&
+      (cleanLowerPrompt.includes('balance') || cleanLowerPrompt.includes('account') || cleanLowerPrompt.includes('current') || cleanLowerPrompt === 'yes' || cleanLowerPrompt === 'haa' || cleanLowerPrompt === 'ha' || cleanLowerPrompt.includes('kardo'));
+
+    const pendingBorrowMsg = [...chatMessages].reverse().find(
+      (m) => m.metadata?.borrowDepositPrompt && !m.metadata.borrowDepositPrompt.confirmed && !m.metadata.borrowDepositPrompt.dismissed
+    );
+
+    if (isDepositConfirmation && pendingBorrowMsg && pendingBorrowMsg.metadata?.borrowDepositPrompt) {
+      const p = pendingBorrowMsg.metadata.borrowDepositPrompt;
+      confirmBorrowDeposit(p.amount, p.counterparty, pendingBorrowMsg.id);
+      setIsAuditing(false);
+      return {
+        merchant: `Borrowed from ${p.counterparty}`,
+        amount: p.amount,
+        category: 'Loan / Inflow',
+        transactionType: 'income',
+        isDiscretionary: false,
+        isOverLimit: false,
+        exceededBy: 0,
+        remainingSafeToSpend: safeToSpendRemaining,
+        sentiment: 'praise',
+        caCommentary: `Right away, Sir! ₹${p.amount.toLocaleString()} has been deposited into your Current Liquid Balance.`,
+        tomorrowAdjustedCap: userSettings.dailySpendLimit,
+      };
+    }
+
     let result: ParseExpenseResult;
 
     const totalOwedByUser = debts
@@ -1230,31 +1462,67 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
           dailySpendLimit: newDaily,
         });
       } else if (action.type === 'create_receivable') {
-        const autoDebt: Debt = {
-          id: `debt-${Date.now()}`,
-          userId: userSettings.userId,
-          title: action.debtTitle || 'Roommate (Rent Share)',
-          amount: action.debtAmount || 5000,
-          debtType: 'owed_to_user',
-          dueDate: 'On Roommate Salary',
-          isSettled: false,
-          notes: action.note || 'Paid on behalf of roommate for rent. Recover once paid.',
-        };
-        setDebts((prev) => [autoDebt, ...prev]);
-        SupabaseService.syncDebtUpsert(autoDebt);
+        const title = action.debtTitle || 'Roommate (Rent Share)';
+        const debtAmt = action.debtAmount || 5000;
+        setDebts((prev) => {
+          const idx = prev.findIndex(
+            (d) => !d.isSettled && d.debtType === 'owed_to_user' && isCounterpartyMatch(d.title, title)
+          );
+          if (idx !== -1) {
+            const updated: Debt = {
+              ...prev[idx],
+              amount: prev[idx].amount + debtAmt,
+              notes: `${prev[idx].notes ? prev[idx].notes + ' | ' : ''}Added ₹${debtAmt.toLocaleString()} on ${todayStr}`,
+            };
+            const copy = [...prev];
+            copy[idx] = updated;
+            SupabaseService.syncDebtUpsert(updated);
+            return copy;
+          }
+          const autoDebt: Debt = {
+            id: `debt-${Date.now()}`,
+            userId: userSettings.userId,
+            title,
+            amount: debtAmt,
+            debtType: 'owed_to_user',
+            dueDate: action.dueDate || 'On Repayment',
+            isSettled: false,
+            notes: action.note || `Lent to ${title}. Recover once paid.`,
+          };
+          SupabaseService.syncDebtUpsert(autoDebt);
+          return [autoDebt, ...prev];
+        });
       } else if (action.type === 'create_payable') {
-        const autoDebt: Debt = {
-          id: `debt-${Date.now()}`,
-          userId: userSettings.userId,
-          title: action.debtTitle || 'Friend Loan (Payable)',
-          amount: action.debtAmount || 10000,
-          debtType: 'owed_by_user',
-          dueDate: action.dueDate || 'On Pay Day',
-          isSettled: false,
-          notes: action.note || 'Dene hain (Payable logged via J.A.R.V.I.S.)',
-        };
-        setDebts((prev) => [autoDebt, ...prev]);
-        SupabaseService.syncDebtUpsert(autoDebt);
+        const title = action.debtTitle || 'Friend Loan (Payable)';
+        const debtAmt = action.debtAmount || 10000;
+        setDebts((prev) => {
+          const idx = prev.findIndex(
+            (d) => !d.isSettled && d.debtType === 'owed_by_user' && isCounterpartyMatch(d.title, title)
+          );
+          if (idx !== -1) {
+            const updated: Debt = {
+              ...prev[idx],
+              amount: prev[idx].amount + debtAmt,
+              notes: `${prev[idx].notes ? prev[idx].notes + ' | ' : ''}Added ₹${debtAmt.toLocaleString()} on ${todayStr}`,
+            };
+            const copy = [...prev];
+            copy[idx] = updated;
+            SupabaseService.syncDebtUpsert(updated);
+            return copy;
+          }
+          const autoDebt: Debt = {
+            id: `debt-${Date.now()}`,
+            userId: userSettings.userId,
+            title,
+            amount: debtAmt,
+            debtType: 'owed_by_user',
+            dueDate: action.dueDate || 'On Pay Day',
+            isSettled: false,
+            notes: action.note || `Borrowed from ${title}.`,
+          };
+          SupabaseService.syncDebtUpsert(autoDebt);
+          return [autoDebt, ...prev];
+        });
       } else if (action.type === 'create_goal' && action.goalData) {
         addGoal({
           name: action.goalData.name,
@@ -1274,31 +1542,44 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
         const allocAmount = alloc?.amount || result.amount;
 
         if (allocAmount > 0) {
-          setGoals((prev) =>
-            prev.map((g) => {
-              const nameLower = g.name.toLowerCase();
-              if (
-                nameLower.includes(targetName) ||
-                targetName.includes(nameLower) ||
-                (targetName.includes('mama') && nameLower.includes('mama')) ||
-                (targetName.includes('emergency') && nameLower.includes('emergency')) ||
-                (targetName.includes('dress') && nameLower.includes('dress'))
-              ) {
-                const updated = g.currentAmount + allocAmount;
-                return {
-                  ...g,
-                  currentAmount: updated,
-                  milestones: g.milestones.map((m) => {
-                    if (m.title.includes('25%') && updated >= g.targetAmount * 0.25) return { ...m, status: 'achieved' };
-                    if (m.title.includes('Half') && updated >= g.targetAmount * 0.5) return { ...m, status: 'achieved' };
-                    if (updated >= g.targetAmount) return { ...m, status: 'achieved' };
-                    return m;
-                  }),
-                };
-              }
-              return g;
-            })
-          );
+          setGoals((prev) => {
+            const idx = prev.findIndex((g) => isGoalMatch(g.name, targetName));
+            if (idx !== -1) {
+              const g = prev[idx];
+              const updated = g.currentAmount + allocAmount;
+              const updatedGoal: SavingsGoal = {
+                ...g,
+                currentAmount: updated,
+                milestones: g.milestones.map((m) => {
+                  if (m.title.includes('25%') && updated >= g.targetAmount * 0.25) return { ...m, status: 'achieved' };
+                  if (m.title.includes('Half') && updated >= g.targetAmount * 0.5) return { ...m, status: 'achieved' };
+                  if (updated >= g.targetAmount) return { ...m, status: 'achieved' };
+                  return m;
+                }),
+              };
+              const copy = [...prev];
+              copy[idx] = updatedGoal;
+              SupabaseService.syncGoalUpsert(updatedGoal);
+              return copy;
+            } else {
+              const newGoal: SavingsGoal = {
+                id: `goal-${Date.now()}`,
+                userId: userSettings.userId,
+                name: alloc?.goalName || result.merchant || 'Savings Goal',
+                targetAmount: allocAmount * 4,
+                currentAmount: allocAmount,
+                monthlyAllocation: allocAmount,
+                isShielded: true,
+                milestones: [
+                  { id: `m1-${Date.now()}`, title: 'First 25% Deposit', status: 'current' },
+                  { id: `m2-${Date.now()}`, title: 'Halfway Mark', status: 'pending' },
+                  { id: `m3-${Date.now()}`, title: 'Goal Complete', status: 'pending' }
+                ]
+              };
+              SupabaseService.syncGoalUpsert(newGoal);
+              return [...prev, newGoal];
+            }
+          });
         }
       } else if (action.type === 'withdraw_goal') {
         const withdraw = action.goalWithdrawal;
@@ -1308,16 +1589,9 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
         if (withdrawAmount > 0) {
           setGoals((prev) =>
             prev.map((g) => {
-              const nameLower = g.name.toLowerCase();
-              if (
-                nameLower.includes(targetName) ||
-                targetName.includes(nameLower) ||
-                (targetName.includes('mama') && nameLower.includes('mama')) ||
-                (targetName.includes('emergency') && nameLower.includes('emergency')) ||
-                (targetName.includes('dress') && nameLower.includes('dress'))
-              ) {
+              if (isGoalMatch(g.name, targetName)) {
                 const updated = Math.max(0, g.currentAmount - withdrawAmount);
-                return {
+                const updatedGoal: SavingsGoal = {
                   ...g,
                   currentAmount: updated,
                   milestones: g.milestones.map((m) => {
@@ -1327,6 +1601,8 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
                     return m;
                   }),
                 };
+                SupabaseService.syncGoalUpsert(updatedGoal);
+                return updatedGoal;
               }
               return g;
             })
@@ -1370,6 +1646,28 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
       }
     }
 
+    // Check if the user borrowed funds (creating a payable)
+    const isBorrowing =
+      actionsToExecute.some((a) => a.type === 'create_payable') ||
+      cleanLowerPrompt.includes('borrow') ||
+      (cleanLowerPrompt.includes('lent') && (cleanLowerPrompt.includes('from') || cleanLowerPrompt.includes('more from'))) ||
+      (cleanLowerPrompt.includes('se') && (cleanLowerPrompt.includes('liye') || cleanLowerPrompt.includes('udhar')));
+
+    let borrowDepositPromptData: BorrowDepositPrompt | undefined = undefined;
+    if (isBorrowing) {
+      const payableAct = actionsToExecute.find((a) => a.type === 'create_payable');
+      const bAmt = payableAct?.debtAmount || Math.abs(result.amount) || 2000;
+      const bParty = payableAct?.debtTitle || result.merchant || 'Lender';
+      borrowDepositPromptData = {
+        amount: bAmt,
+        counterparty: bParty,
+        confirmed: false,
+      };
+      if (!result.caCommentary.toLowerCase().includes('deposit this') && !result.caCommentary.toLowerCase().includes('deposit in current balance') && !result.caCommentary.toLowerCase().includes('deposit kar')) {
+        result.caCommentary += `\n\nSir, would you like me to deposit this borrowed ₹${bAmt.toLocaleString()} into your current liquid balance?`;
+      }
+    }
+
     // 4. Add AI Chartered Accountant response bubble
     const aiMsgId = `ai-${Date.now()}`;
     const aiMsg: ChatMessage = {
@@ -1396,6 +1694,7 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
         exceededBy: result.exceededBy,
         amortizationRule: result.isOverLimit ? 'T+1 AMORTIZATION APPLIED' : undefined,
         autoAction: result.autoAction,
+        borrowDepositPrompt: borrowDepositPromptData,
       },
     };
     setChatMessages((prev) => [...prev, aiMsg]);
@@ -1513,6 +1812,8 @@ export function FinanceProvider({ children }: { children: React.ReactNode }) {
         clearAllSessions,
         processBankSms,
         confirmBankAlertTransaction,
+        confirmBorrowDeposit,
+        dismissBorrowDeposit,
         spentToday,
         safeToSpendRemaining,
         todayDeficit,

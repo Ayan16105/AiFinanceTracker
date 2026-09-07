@@ -187,30 +187,30 @@ export default function CommandCenter() {
           </div>
         </div>
 
-        {/* Card 2: Monthly Salary & Fixed Bills */}
+        {/* Card 2: Current Balance & Monthly Salary */}
         <div className="bg-white rounded-3xl p-6 shadow-sm border border-slate-100 flex flex-col justify-between">
           <div className="flex items-start justify-between">
             <div>
               <span className="text-xs font-bold text-[#76777d] uppercase tracking-wider">
-                Monthly Salary & Bills
+                Current Balance
               </span>
               <div className="flex items-baseline gap-1 mt-1.5">
-                <span className="font-mono-num text-3xl sm:text-4xl font-bold tracking-tight text-[#0b1c30]">
-                  ₹{userSettings.monthlySalary?.toLocaleString() || '35,000'}
+                <span className="font-mono-num text-3xl sm:text-4xl font-bold tracking-tight text-[#006c49]">
+                  ₹{currentBalance.toLocaleString()}
                 </span>
-                <span className="text-xs text-[#76777d]">/month</span>
+                <span className="text-xs text-[#76777d]">liquid available</span>
               </div>
             </div>
             <div className="w-10 h-10 rounded-2xl bg-[#eff4ff] flex items-center justify-center text-[#0b1c30]">
-              <Home className="w-5 h-5 text-[#006c49]" />
+              <Wallet className="w-5 h-5 text-[#006c49]" />
             </div>
           </div>
 
           <div className="mt-5 flex flex-col gap-1.5 text-xs text-[#45464d] bg-[#eff4ff]/60 p-3 rounded-2xl border border-slate-100">
             <div className="flex justify-between items-center pb-1 mb-1 border-b border-slate-200/60">
-              <span className="font-semibold text-slate-700">Current Liquid Cash:</span>
-              <span className="font-mono-num font-bold text-[#006c49] bg-white px-2 py-0.5 rounded-full border border-emerald-200 shadow-2xs">
-                ₹{currentBalance.toLocaleString()}
+              <span className="font-semibold text-slate-700">Monthly Salary:</span>
+              <span className="font-mono-num font-bold text-[#0b1c30] bg-white px-2 py-0.5 rounded-full border border-slate-200 shadow-2xs">
+                ₹{userSettings.monthlySalary?.toLocaleString() || '35,000'}/month
               </span>
             </div>
             <div className="flex justify-between">

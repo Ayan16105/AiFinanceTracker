@@ -86,6 +86,13 @@ export interface BankAlertData {
   confirmed?: boolean;
 }
 
+export interface BorrowDepositPrompt {
+  amount: number;
+  counterparty: string;
+  confirmed: boolean;
+  dismissed?: boolean;
+}
+
 export interface ChatMessageMetadata {
   amount?: number;
   merchant?: string;
@@ -101,6 +108,7 @@ export interface ChatMessageMetadata {
   autoAction?: AutoAction;
   sessionId?: string;
   bankAlertData?: BankAlertData;
+  borrowDepositPrompt?: BorrowDepositPrompt;
 }
 
 export interface ChatMessage {

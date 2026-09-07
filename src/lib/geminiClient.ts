@@ -66,6 +66,21 @@ DEBTS, LOANS & OBLIGATIONS (CRITICAL):
          ]
      --> In ca_commentary, explain clearly each deduction:
          "Understood, Sir! Processed compound debt settlement: deducted ₹5,000 for Kamran, ₹2,000 for Man 1, and ₹1,000 for Man 2 respectively. Balances updated on your radar!"
+8. BORROWING MONEY & DEPOSIT INQUIRY (CRITICAL USER MANDATE):
+   - When Sir borrows money or takes a loan (e.g. "borrowed 2000 from Kamran", "lent 2000 more from Kamaran", "Kamran se 2000 udhar liye", "borrowed 5000 from Rahul"):
+     --> THIS IS BORROWING / PAYABLE (create_payable)!
+     --> Set amount: 0, transaction_type: "transfer", is_discretionary: false.
+     --> Emit auto_action: { "type": "create_payable", "debtTitle": counterparty, "debtAmount": amount, "dueDate": "On Pay Day", "note": "Borrowed from " + counterparty }.
+     --> IN CA_COMMENTARY, ALWAYS POLITELY ASK:
+         "Sir, would you like me to deposit this borrowed ₹[amount] into your current liquid balance?"
+9. LENDING MONEY TO SOMEONE:
+   - When Sir lends money to someone (e.g. "lent 2000 to Kamran", "Rahul ko 2000 udhar diye"):
+     --> THIS IS LENDING / RECEIVABLE (create_receivable)!
+     --> Set amount: 0, transaction_type: "transfer", is_discretionary: false.
+     --> Emit auto_action: { "type": "create_receivable", "debtTitle": counterparty, "debtAmount": amount, "dueDate": "On Repayment", "note": "Lent to " + counterparty }.
+10. DEBTS & GOALS DEDUPLICATION / TOP-UP PROTOCOL:
+   - ONLY ONE GOAL OF THE SAME NAME EXISTS: If Sir commands to allocate or create a goal with an existing name, deposit/top-up that existing goal instead of creating a duplicate.
+   - ONLY ONE DEBT RECORD PER PERSON EXISTS: If Sir says "lent 2000 more from Kamran" and Kamran already has a record, top-up that person's balance only instead of creating duplicate entries.
 
 GOALS & SAVINGS INQUIRIES & ALLOCATIONS:
 1. INQUIRIES:
@@ -500,6 +515,142 @@ export function parseExpenseWithRules(
         settleCounterparty: counterparty,
         debtAmount: payAmount,
         isPartial: true,
+      },
+    };
+  }
+
+  // 0.35 Borrowing / Taking Loans (e.g. "lent 2000 more from kamaran", "lent 2000 from kamran", "borrowed 2000 from kamran", "kamran se 2000 udhar liye")
+  const isBorrowPrompt =
+    (cleanPrompt.includes('borrow') ||
+     (cleanPrompt.includes('lent') && (cleanPrompt.includes('from') || cleanPrompt.includes('more from'))) ||
+     ((cleanPrompt.includes('udhar') || cleanPrompt.includes('udhaar') || cleanPrompt.includes('loan')) && (cleanPrompt.includes('liya') || cleanPrompt.includes('liye') || cleanPrompt.includes('se'))) ||
+     (cleanPrompt.includes('se') && (cleanPrompt.includes('liye') || cleanPrompt.includes('le liye'))));
+
+  // 0.36 Lending to someone (e.g. "lent 2000 to kamran", "lent 2000 more to kamran", "gave 2000 loan to kamran", "kamran ko 2000 diye udhar")
+  const isLendPrompt =
+    !isBorrowPrompt &&
+    ((cleanPrompt.includes('lent') && (cleanPrompt.includes('to') || cleanPrompt.includes('more to'))) ||
+     (cleanPrompt.includes('lend') && cleanPrompt.includes('to')) ||
+     ((cleanPrompt.includes('udhar') || cleanPrompt.includes('udhaar') || cleanPrompt.includes('loan')) && (cleanPrompt.includes('diya') || cleanPrompt.includes('diye') || cleanPrompt.includes('ko'))));
+
+  if (isBorrowPrompt) {
+    const amountMatch = prompt.match(/(\d{3,6})/);
+    const amount = amountMatch ? parseInt(amountMatch[1], 10) : 2000;
+
+    let counterparty = '';
+    if (context?.debtsSummary?.activeDebts) {
+      const foundDebt = context.debtsSummary.activeDebts.find((d) => {
+        const clean = d.title.toLowerCase().replace(/[^a-z0-9]/g, '');
+        const cleanP = cleanPrompt.replace(/[^a-z0-9]/g, '');
+        const noVowelsTitle = clean.replace(/[aeiou]/g, '');
+        return cleanP.includes(clean) || (noVowelsTitle.length >= 3 && cleanP.includes(noVowelsTitle));
+      });
+      if (foundDebt) counterparty = foundDebt.title;
+    }
+
+    if (!counterparty) {
+      const fromMatch = prompt.match(/(?:from|se)\s+([a-zA-Z0-9]+)/i);
+      if (fromMatch && !['the', 'my', 'his', 'her', 'salary', 'account', 'me', 'mein'].includes(fromMatch[1].toLowerCase())) {
+        counterparty = fromMatch[1].trim();
+      }
+    }
+    if (!counterparty) {
+      const seMatch = prompt.match(/([a-zA-Z0-9]+)\s+se/i);
+      if (seMatch && !['account', 'salary', 'aise', 'paise'].includes(seMatch[1].toLowerCase())) {
+        counterparty = seMatch[1].trim();
+      }
+    }
+    if (!counterparty) {
+      if (/kamaran|kamran/i.test(prompt)) counterparty = 'Kamran';
+      else if (/rahul/i.test(prompt)) counterparty = 'Rahul';
+      else if (/sharma/i.test(prompt)) counterparty = 'Sharma Ji';
+      else counterparty = 'Friend';
+    } else {
+      if (/kamaran|kamran/i.test(counterparty)) counterparty = 'Kamran';
+      else counterparty = counterparty.charAt(0).toUpperCase() + counterparty.slice(1);
+    }
+
+    return {
+      merchant: `Borrowed from ${counterparty}`,
+      amount: 0,
+      category: 'Debts & Liabilities',
+      transactionType: 'transfer',
+      isDiscretionary: false,
+      isOverLimit: false,
+      exceededBy: 0,
+      remainingSafeToSpend: Math.max(0, dailyLimit - spentToday),
+      sentiment: 'praise',
+      caCommentary: isEnglish
+        ? `Right away, Sir! Recorded ₹${amount.toLocaleString()} borrowed from ${counterparty} under your liabilities. Sir, would you like me to deposit this borrowed ₹${amount.toLocaleString()} into your current liquid balance?`
+        : `Right away, Boss! ${counterparty} se ₹${amount.toLocaleString()} borrowed liability record kar li hai. Boss, kya aap chahte hain ki main is ₹${amount.toLocaleString()} ko aapke Current Liquid Balance mein deposit kar doon?`,
+      tomorrowAdjustedCap: dailyLimit,
+      autoAction: {
+        type: 'create_payable',
+        debtTitle: counterparty,
+        debtAmount: amount,
+        dueDate: 'On Pay Day',
+        note: `Borrowed from ${counterparty}.`,
+      },
+    };
+  }
+
+  if (isLendPrompt) {
+    const amountMatch = prompt.match(/(\d{3,6})/);
+    const amount = amountMatch ? parseInt(amountMatch[1], 10) : 2000;
+
+    let counterparty = '';
+    if (context?.debtsSummary?.activeDebts) {
+      const foundDebt = context.debtsSummary.activeDebts.find((d) => {
+        const clean = d.title.toLowerCase().replace(/[^a-z0-9]/g, '');
+        const cleanP = cleanPrompt.replace(/[^a-z0-9]/g, '');
+        const noVowelsTitle = clean.replace(/[aeiou]/g, '');
+        return cleanP.includes(clean) || (noVowelsTitle.length >= 3 && cleanP.includes(noVowelsTitle));
+      });
+      if (foundDebt) counterparty = foundDebt.title;
+    }
+
+    if (!counterparty) {
+      const toMatch = prompt.match(/(?:to|ko)\s+([a-zA-Z0-9]+)/i);
+      if (toMatch && !['the', 'my', 'his', 'her', 'account', 'goal'].includes(toMatch[1].toLowerCase())) {
+        counterparty = toMatch[1].trim();
+      }
+    }
+    if (!counterparty) {
+      const koMatch = prompt.match(/([a-zA-Z0-9]+)\s+ko/i);
+      if (koMatch && !['account', 'goal'].includes(koMatch[1].toLowerCase())) {
+        counterparty = koMatch[1].trim();
+      }
+    }
+    if (!counterparty) {
+      if (/kamaran|kamran/i.test(prompt)) counterparty = 'Kamran';
+      else if (/rahul/i.test(prompt)) counterparty = 'Rahul';
+      else if (/sharma/i.test(prompt)) counterparty = 'Sharma Ji';
+      else counterparty = 'Friend';
+    } else {
+      if (/kamaran|kamran/i.test(counterparty)) counterparty = 'Kamran';
+      else counterparty = counterparty.charAt(0).toUpperCase() + counterparty.slice(1);
+    }
+
+    return {
+      merchant: `Lent to ${counterparty}`,
+      amount: 0,
+      category: 'Debts & Liabilities',
+      transactionType: 'transfer',
+      isDiscretionary: false,
+      isOverLimit: false,
+      exceededBy: 0,
+      remainingSafeToSpend: Math.max(0, dailyLimit - spentToday),
+      sentiment: 'praise',
+      caCommentary: isEnglish
+        ? `Understood, Sir! Recorded ₹${amount.toLocaleString()} lent to ${counterparty} under money owed to you (receivable). Added to your radar!`
+        : `Noted, Boss! ${counterparty} ko diye gaye ₹${amount.toLocaleString()} udhaar (receivable) record kar liye hain. Yeh aapke radar par active rahega!`,
+      tomorrowAdjustedCap: dailyLimit,
+      autoAction: {
+        type: 'create_receivable',
+        debtTitle: counterparty,
+        debtAmount: amount,
+        dueDate: 'On Repayment',
+        note: `Lent to ${counterparty}. Recover when due.`,
       },
     };
   }
@@ -1120,12 +1271,28 @@ export function parseExpenseWithRules(
 
   // 1.27 Goal Allocation / Savings Deposit (e.g. "i am palning to save 3000 for this month for wedding dress", "mama's wedding dress me salary se 2000 aur daal do")
   if (
-    (cleanPrompt.includes('goal') || cleanPrompt.includes('mama') || cleanPrompt.includes('dress') || cleanPrompt.includes('saving') || cleanPrompt.includes('wedding')) &&
-    (cleanPrompt.includes('daal do') || cleanPrompt.includes('dal do') || cleanPrompt.includes('deposit') || cleanPrompt.includes('allocate') || cleanPrompt.includes('add') || cleanPrompt.includes('saving ke') || cleanPrompt.includes('transfer') || cleanPrompt.includes('save') || cleanPrompt.includes('plan') || cleanPrompt.includes('palning'))
+    (cleanPrompt.includes('goal') || cleanPrompt.includes('mama') || cleanPrompt.includes('dress') || cleanPrompt.includes('saving') || cleanPrompt.includes('wedding') || cleanPrompt.includes('fund') || (context?.goals && context.goals.some((g) => cleanPrompt.includes(g.name.toLowerCase())))) &&
+    (cleanPrompt.includes('daal do') || cleanPrompt.includes('dal do') || cleanPrompt.includes('deposit') || cleanPrompt.includes('allocate') || cleanPrompt.includes('add') || cleanPrompt.includes('saving ke') || cleanPrompt.includes('transfer') || cleanPrompt.includes('save') || cleanPrompt.includes('plan') || cleanPrompt.includes('palning') || cleanPrompt.includes('daalo'))
   ) {
     const amountMatch = prompt.match(/(\d{3,6})/);
     const allocAmount = amountMatch ? parseInt(amountMatch[1], 10) : 3000;
-    const goalName = cleanPrompt.includes('mama') || cleanPrompt.includes('dress') || cleanPrompt.includes('wedding') ? "Mama's Wedding Dress" : cleanPrompt.includes('emergency') ? "Emergency Buffer" : "Savings Goal";
+
+    let goalName = '';
+    if (context?.goals && context.goals.length > 0) {
+      const found = context.goals.find((g) => {
+        const gName = g.name.toLowerCase();
+        return cleanPrompt.includes(gName) || gName.split(' ').some((w) => w.length > 3 && cleanPrompt.includes(w));
+      });
+      if (found) goalName = found.name;
+    }
+    if (!goalName) {
+      if (cleanPrompt.includes('mama') || cleanPrompt.includes('dress') || cleanPrompt.includes('wedding')) goalName = "Mama's Wedding Dress";
+      else if (cleanPrompt.includes('emergency') || cleanPrompt.includes('buffer')) goalName = "Emergency Buffer";
+      else {
+        const afterIn = prompt.match(/(?:in|to|for|me|mein)\s+([a-zA-Z0-9\s']+?)(?:\s+goal|\s+saving|\s+fund|$)/i);
+        goalName = afterIn ? afterIn[1].trim() : 'Savings Goal';
+      }
+    }
 
     return {
       merchant: goalName,

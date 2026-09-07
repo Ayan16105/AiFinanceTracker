@@ -50,6 +50,8 @@ export default function LedgerChat() {
     clearAllSessions,
     processBankSms,
     confirmBankAlertTransaction,
+    confirmBorrowDeposit,
+    dismissBorrowDeposit,
   } = useFinance();
 
   const [inputPrompt, setInputPrompt] = useState('');
@@ -992,6 +994,65 @@ export default function LedgerChat() {
                               <span>View in Goals & Debts Tracker</span>
                               <ArrowRight className="w-3.5 h-3.5" />
                             </button>
+                          </div>
+                        )}
+
+                        {/* Interactive Borrowed Funds Deposit Card */}
+                        {msg.metadata?.borrowDepositPrompt && (
+                          <div className="p-3.5 bg-gradient-to-r from-emerald-50 to-teal-50 rounded-2xl border border-emerald-300 flex flex-col gap-2.5 ring-1 ring-emerald-100">
+                            <div className="flex items-center justify-between">
+                              <span className="font-bold text-xs text-[#006c49] flex items-center gap-1.5">
+                                <span>💵</span> Borrowed Funds Inflow Pending
+                              </span>
+                              <span className="font-mono-num font-bold text-xs text-[#006c49] bg-white px-2.5 py-0.5 rounded-full border border-emerald-200 shadow-2xs">
+                                +₹{msg.metadata.borrowDepositPrompt.amount.toLocaleString()}
+                              </span>
+                            </div>
+
+                            {msg.metadata.borrowDepositPrompt.confirmed ? (
+                              <div className="p-2.5 bg-white/80 rounded-xl border border-emerald-200 flex items-center justify-between">
+                                <span className="text-xs font-bold text-[#006c49] flex items-center gap-1.5">
+                                  <CheckCircle2 className="w-4 h-4 text-[#006c49]" />
+                                  <span>
+                                    {msg.metadata.borrowDepositPrompt.dismissed
+                                      ? 'Kept Separate (Not Deposited)'
+                                      : 'Deposited into Current Liquid Balance'}
+                                  </span>
+                                </span>
+                                <span className="text-[10px] bg-emerald-100 text-[#006c49] px-2 py-0.5 rounded-full font-bold">
+                                  {msg.metadata.borrowDepositPrompt.dismissed ? 'Dismissed' : 'Credited'}
+                                </span>
+                              </div>
+                            ) : (
+                              <div className="flex flex-col gap-2">
+                                <p className="text-xs text-slate-700 leading-relaxed">
+                                  Sir, you borrowed <strong>₹{msg.metadata.borrowDepositPrompt.amount.toLocaleString()}</strong> from <strong>{msg.metadata.borrowDepositPrompt.counterparty}</strong>. Would you like me to deposit this into your <strong>Current Liquid Balance</strong>?
+                                </p>
+                                <div className="flex flex-wrap items-center gap-2 pt-1">
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      confirmBorrowDeposit(
+                                        msg.metadata!.borrowDepositPrompt!.amount,
+                                        msg.metadata!.borrowDepositPrompt!.counterparty,
+                                        msg.id
+                                      )
+                                    }
+                                    className="flex-1 py-2 px-3 rounded-xl bg-[#006c49] hover:bg-emerald-700 text-white text-xs font-bold transition-all shadow-xs flex items-center justify-center gap-1.5 cursor-pointer"
+                                  >
+                                    <CheckCircle2 className="w-3.5 h-3.5" />
+                                    <span>Deposit into Current Balance</span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => dismissBorrowDeposit(msg.id)}
+                                    className="py-2 px-3 rounded-xl bg-white hover:bg-slate-100 text-slate-600 border border-slate-200 text-xs font-semibold transition-all cursor-pointer"
+                                  >
+                                    Keep Separate
+                                  </button>
+                                </div>
+                              </div>
+                            )}
                           </div>
                         )}
                       </div>
